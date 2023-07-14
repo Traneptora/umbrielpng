@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zlib.h>
+
 typedef struct UmbPngChunk {
     uint32_t chunk_size;
     uint32_t tag;
@@ -70,7 +72,7 @@ UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
     chunk->crc32 = tag_array_to_uint32(tag);
 
     chunk->chunk_size = 12 + chunk->data_size;
-    chunk->offset = last ? last->offset + last->chunk_size : 0;
+    chunk->offset = last ? last->offset + last->chunk_size : 8;
 
     return chunk;
 
@@ -83,6 +85,48 @@ fail:
     }
     freep(chunk);
     return NULL;
+}
+
+int read_chunk(FILE *in, UmbPngChunk *chunk, char **error) {
+    int ret;
+    uint8_t tag[4];
+    size_t total = 0;
+    uint32_t crc;
+
+    uint32_to_tag_array(tag, chunk->tag);
+    crc = crc32_z(0, tag, 4);
+
+    if (chunk->data_size)
+        chunk->data = malloc(chunk->data_size);
+    if (chunk->data_size && !chunk->data) {
+        fprintf(stderr, "Allocation failed\n");
+        return -1;
+    }
+
+    if (chunk->data_size) {
+        ret = fseek(in, chunk->offset + 8, SEEK_SET);
+        if (ret < 0)
+            goto fail;
+    }
+
+    while (total < chunk->data_size) {
+        size_t read = fread(chunk->data + total, 1, chunk->data_size - total, in);
+        if (!read)
+            goto fail;
+        crc = crc32_z(crc, chunk->data + total, read);
+        total += read;
+    }
+
+    if (crc != chunk->crc32)
+        fprintf(stderr, "Warning: computed CRC32 %08x does not match read CRC32 %08x\n", crc, chunk->crc32);
+
+    return 0;
+
+fail:
+    perror(*error);
+    *error = "Error reading chunk data";
+    freep(chunk->data);
+    return -1;
 }
 
 /** frees everything except the base node */
@@ -146,16 +190,17 @@ int main(int argc, char *argv[]) {
         if (!curr_chain->chunk) {
             curr_chain->chunk = scan_chunk(in, NULL, &error);
             if (!curr_chain->chunk) {
-                if (error) {
-                    fprintf(stderr, "%s: %s\n", argv[0], error);
-                    ret = 2;
-                }
+                if (!error)
+                    break;
+                fprintf(stderr, "%s: %s\n", argv[0], error);
+                ret = 2;
                 goto flush;
             }
         } else {
             UmbPngFile *next = calloc(1, sizeof(UmbPngFile));
             if (!next) {
                 fprintf(stderr, "%s: Allocation failure\n", argv[0]);
+                ret = 2;
                 goto flush;
             }
             curr_chain->next = next;
@@ -163,16 +208,28 @@ int main(int argc, char *argv[]) {
             curr_chain = next;
             curr_chain->chunk = scan_chunk(in, curr_chain->prev->chunk, &error);
             if (!curr_chain->chunk) {
-                if (error) {
-                    fprintf(stderr, "%s: %s\n", argv[0], error);
-                    ret = 2;
-                }
+                if (curr_chain->prev)
+                    curr_chain->prev->next = NULL;
+                freep(curr_chain);
+                if (!error)
+                    break;
+                fprintf(stderr, "%s: %s\n", argv[0], error);
+                ret = 2;
                 goto flush;
             }
         }
         uint32_to_tag_array(tag, curr_chain->chunk->tag);
         fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
             tag, curr_chain->chunk->chunk_size, (long long unsigned)curr_chain->chunk->offset, curr_chain->chunk->crc32);
+    }
+
+    curr_chain = &png_file;
+    while (curr_chain) {
+        char *error = argv[0];
+        ret = read_chunk(in, curr_chain->chunk, &error);
+        if (ret < 0)
+            goto flush;
+        curr_chain = curr_chain->next;
     }
 
 flush:
