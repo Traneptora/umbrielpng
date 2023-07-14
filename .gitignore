@@ -50,3 +50,9 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# valgrind dumps
+vgcore.*
+
+# built file itself
+umbrielpng
