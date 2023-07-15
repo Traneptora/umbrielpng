@@ -10,6 +10,11 @@
 #define maketag(a,b,c,d) ((((uint32_t)(a)) << 24) | (((uint32_t)(b)) << 16) |\
                          (((uint32_t)(c)) << 8) | (uint32_t)(d))
 
+#define freep(p) do {   \
+    if (p) free(p);     \
+    (p) = NULL;         \
+} while (0)
+
 #define tag_IHDR maketag('I','H','D','R')
 #define tag_PLTE maketag('P','L','T','E')
 #define tag_IDAT maketag('I','D','A','T')
@@ -90,11 +95,6 @@ static inline void uint32_to_tag_array(uint8_t *tag, uint32_t made) {
     for (int i = 0; i < 4; i++)
         tag[i] = (made >> (24 - (8 * i))) & 0xFF;
 }
-
-#define freep(p) do {   \
-    if (p) free(p);     \
-    (p) = NULL;         \
-} while (0)
 
 UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
     size_t read;
