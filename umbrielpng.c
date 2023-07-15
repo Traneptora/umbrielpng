@@ -35,8 +35,8 @@
  */
 
 #include <error.h>
+#include <inttypes.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +94,14 @@ typedef struct UmbPngChunkChain {
     struct UmbPngChunkChain *next;
 } UmbPngChunkChain;
 
+enum UmbPngColorType {
+    COLOR_GRAY = 0,
+    COLOR_TRUE = 2,
+    COLOR_INDEXED = 3,
+    COLOR_GRAY_A = 4,
+    COLOR_RGBA = 6,
+};
+
 typedef struct UmbPngScanData {
     int have_cicp;
     int have_iccp;
@@ -101,12 +109,33 @@ typedef struct UmbPngScanData {
     int have_gama_chrm;
     int have_plte;
     int icc_is_srgb;
+
+    uint32_t width;
+    uint32_t height;
+    int depth;
+    enum UmbPngColorType color;
+
+    int sbit[4];
 } UmbPngScanData;
 
 typedef struct UmbIccCheck {
     size_t size;
     uint32_t crc32;
 } UmbIccCheck;
+
+static const char *color_names[7] = {
+    "Grayscale",
+    NULL,
+    "RGB",
+    "Indexed",
+    "Grayscale + Alpha",
+    NULL,
+    "RGB + Alpha",
+};
+
+static const int color_channels[7] = {
+    1, 0, 3, 3, 2, 0, 4,
+};
 
 static const uint8_t png_signature[8] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -128,10 +157,9 @@ static const uint32_t strip_chunks[8] = {
 
 static const UmbIccCheck known_srgb_profiles[] = {
     /* GIMP built-in sRGB */
-    {672, 0x41ad7657},
-    {672, 0x7e1f1d56},
-    {672, 0x3085a3ae},
-    {672, 0x07b94f91},
+    {672, 0x07b94f91}, {672, 0x103c272a}, {672, 0x16c98593}, {672, 0x1d533259},
+    {672, 0x3085a3ae}, {672, 0x36669045}, {672, 0x41ad7657}, {672, 0x7e1f1d56},
+    {672, 0xe077ec7d}, {672, 0xe5aa80d5}, {672, 0xec7778c0}, {672, 0x630a527d},
     /* libjxl synthesized sRGB */
     {536, 0x1b34acea},
     /* ColorSync 4.3 sRGB ICC Profile */
@@ -335,6 +363,53 @@ fail:
     return -1;
 }
 
+static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **error) {
+
+    if (ihdr->data_size != 13) {
+        *error = "Illegal IHDR chunk size";
+        return -1;
+    }
+
+    data->width = tag_array_to_uint32(ihdr->data);
+    data->height = tag_array_to_uint32(ihdr->data + 4);
+    data->depth = ihdr->data[8];
+    data->color = ihdr->data[9];
+    if (ihdr->data[10]) {
+        *error = "Illegal Compression Method";
+        return -1;
+    }
+    if (ihdr->data[11]) {
+        *error = "Illegal filter method";
+        return -1;
+    }
+
+    if (ihdr->data[12] > 1) {
+        *error = "Illegal interlace method";
+        return -1;
+    }
+
+    switch (data->color) {
+        case COLOR_INDEXED:
+        case COLOR_GRAY:
+            if (data->depth == 1 || data->depth == 2 || data->depth == 4)
+                break;
+        case COLOR_TRUE:
+        case COLOR_GRAY_A:
+        case COLOR_RGBA:
+            if (data->depth != 8 && data->depth != 16 ||
+                    data->depth == 16 && data->color == COLOR_INDEXED) {
+                *error = "Illegal bit depth";
+                return -1;
+            }
+            break;
+        default:
+            *error = "Illegal color type";
+            return -1;
+    }
+
+    return 0;
+}
+
 /** frees everything except the base node */
 static void free_chain(UmbPngChunkChain *file) {
     UmbPngChunkChain *prev = file;
@@ -453,8 +528,7 @@ int main(int argc, char *argv[]) {
             tag, curr_chain->chunk->chunk_size, (long long unsigned)curr_chain->chunk->offset, curr_chain->chunk->crc32);
     }
 
-    curr_chain = &png_file;
-    while (curr_chain) {
+    for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
         char *error = argv[0];
         ret = read_chunk(in, curr_chain->chunk, &error);
         if (ret < 0)
@@ -476,7 +550,23 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        curr_chain = curr_chain->next;
+        if (curr_chain->chunk->tag == tag_IHDR) {
+            ret = parse_ihdr(curr_chain->chunk, &data, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                continue;
+            }
+            fprintf(stderr, "Size: %" PRIu32 "x%" PRIu32 ", Color: %d-bit %s\n", data.width, data.height,
+                data.depth, color_names[data.color]);
+        }
+        if (curr_chain->chunk->tag == tag_sBIT) {
+            if (curr_chain->chunk->data_size != color_channels[data.color]) {
+                fprintf(stderr, "%s: Warning: Illegal sBIT chunk\n", argv[0]);
+                continue;
+            }
+            for (int i = 0; i < color_channels[data.color]; i++)
+                data.sbit[i] = curr_chain->chunk->data[i];
+        }
     }
 
     if (!output)
@@ -503,7 +593,7 @@ int main(int argc, char *argv[]) {
     }
 
     curr_chain = &png_file;
-    while (curr_chain) {
+    for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
         char *error = argv[0];
         int skip = 0;
         uint8_t tag[5] = { 0 };
@@ -525,9 +615,19 @@ int main(int argc, char *argv[]) {
             skip = 1;
         if (curr_chain->chunk->tag == tag_iCCP && data.icc_is_srgb)
             skip = 1;
+        if (curr_chain->chunk->tag == tag_sBIT) {
+            skip = 1;
+            for (int i = 0; i < color_channels[data.color]; i++) {
+                if (data.sbit[i] != data.depth) {
+                    skip = 0;
+                    break;
+                }
+            }
+        }
         if (skip) {
             uint32_to_tag_array(tag, curr_chain->chunk->tag);
             fprintf(stderr, "Stripping chunk: %s\n", tag);
+            continue;
         } else {
             ret = write_chunk(out, curr_chain->chunk, &error);
             if (ret < 0)
@@ -542,8 +642,6 @@ int main(int argc, char *argv[]) {
                 goto flush;
             }
         }
-
-        curr_chain = curr_chain->next;
     }
 
 flush:
