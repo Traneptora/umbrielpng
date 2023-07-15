@@ -56,3 +56,6 @@ vgcore.*
 
 # built file itself
 umbrielpng
+
+# PNG files
+*.png
