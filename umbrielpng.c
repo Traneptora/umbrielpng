@@ -10,32 +10,6 @@
 #define maketag(a,b,c,d) ((((uint32_t)(a)) << 24) | (((uint32_t)(b)) << 16) |\
                          (((uint32_t)(c)) << 8) | (uint32_t)(d))
 
-typedef struct UmbPngChunk {
-    uint32_t chunk_size;
-    uint32_t tag;
-    uint8_t *data;
-    uint32_t data_size;
-    uint32_t crc32;
-    size_t offset;
-} UmbPngChunk;
-
-typedef struct UmbPngChunkChain {
-    UmbPngChunk *chunk;
-    struct UmbPngChunkChain *prev;
-    struct UmbPngChunkChain *next;
-} UmbPngChunkChain;
-
-typedef struct UmbPngScanData {
-    int have_cicp;
-    int have_iccp;
-    int have_srgb;
-    int have_plte;
-} UmbPngScanData;
-
-static const uint8_t png_signature[8] = {
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-};
-
 #define tag_IHDR maketag('I','H','D','R')
 #define tag_PLTE maketag('P','L','T','E')
 #define tag_IDAT maketag('I','D','A','T')
@@ -63,6 +37,42 @@ static const uint8_t png_signature[8] = {
 #define tag_tEXt maketag('t','E','X','t')
 #define tag_zTXt maketag('z','T','X','t')
 #define tag_iTXt maketag('i','T','X','t')
+
+typedef struct UmbPngChunk {
+    uint32_t chunk_size;
+    uint32_t tag;
+    uint8_t *data;
+    uint32_t data_size;
+    uint32_t crc32;
+    size_t offset;
+} UmbPngChunk;
+
+typedef struct UmbPngChunkChain {
+    UmbPngChunk *chunk;
+    struct UmbPngChunkChain *prev;
+    struct UmbPngChunkChain *next;
+} UmbPngChunkChain;
+
+typedef struct UmbPngScanData {
+    int have_cicp;
+    int have_iccp;
+    int have_srgb;
+    int have_gama_chrm;
+    int have_plte;
+} UmbPngScanData;
+
+static const uint8_t png_signature[8] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+};
+
+static const UmbPngChunk default_srgb = {
+    .chunk_size = 13,
+    .tag = tag_sRGB,
+    .data = (uint8_t[]){1},
+    .data_size = 1,
+    .crc32 = 0xd9c92c7f,
+    .offset = 12,
+};
 
 static const uint32_t strip_chunks[8] = {
     tag_bKGD, tag_eXIf, tag_pHYs, tag_sPLT,
@@ -174,7 +184,7 @@ fail:
     return -1;
 }
 
-int write_chunk(FILE *out, UmbPngChunk *chunk, char **error) {
+int write_chunk(FILE *out, const UmbPngChunk *chunk, char **error) {
     uint8_t tag[4];
     size_t count;
     size_t total = 0;
@@ -183,7 +193,7 @@ int write_chunk(FILE *out, UmbPngChunk *chunk, char **error) {
     count = fwrite(tag, 4, 1, out);
     if (!count)
         goto fail;
-    
+
     uint32_to_tag_array(tag, chunk->tag);
     count = fwrite(tag, 4, 1, out);
     if (!count)
@@ -317,6 +327,10 @@ int main(int argc, char *argv[]) {
         case tag_iCCP:
             data.have_iccp = 1;
             break;
+        case tag_gAMA:
+        case tag_cHRM:
+            data.have_gama_chrm = 1;
+            break;
         }
         uint32_to_tag_array(tag, curr_chain->chunk->tag);
         fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
@@ -383,7 +397,14 @@ int main(int argc, char *argv[]) {
             ret = write_chunk(out, curr_chain->chunk, &error);
             if (ret < 0)
                 goto flush;
-        }       
+        }
+        if (curr_chain->chunk->tag == tag_IHDR && !data.have_cicp && !data.have_srgb
+                                               && !data.have_iccp && !data.have_gama_chrm) {
+            fprintf(stderr, "Inserting default sRGB chunk\n");
+            ret = write_chunk(out, &default_srgb, &error);
+            if (ret < 0)
+                goto flush;
+        }
         curr_chain = curr_chain->next;
     }
 
