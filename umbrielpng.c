@@ -1,3 +1,39 @@
+/**
+ * @file umbrielpng.c
+ * @author Leo Izen <leo.izen@gmail.com>
+ * @brief PNG Tweaker
+ * @version 0.1
+ * @date 2023-07-15
+ *
+ * BSD 3-Clause License
+ *
+ * Copyright (c) 2023, Leo Izen
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ * list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <error.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -64,7 +100,13 @@ typedef struct UmbPngScanData {
     int have_srgb;
     int have_gama_chrm;
     int have_plte;
+    int icc_is_srgb;
 } UmbPngScanData;
+
+typedef struct UmbIccCheck {
+    size_t size;
+    uint32_t crc32;
+} UmbIccCheck;
 
 static const uint8_t png_signature[8] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -84,6 +126,28 @@ static const uint32_t strip_chunks[8] = {
     tag_tIME, tag_tEXt, tag_zTXt, tag_iTXt,
 };
 
+static const UmbIccCheck known_srgb_profiles[] = {
+    /* GIMP built-in sRGB */
+    {672, 0x41ad7657},
+    {672, 0x7e1f1d56},
+    {672, 0x3085a3ae},
+    {672, 0x07b94f91},
+    /* libjxl synthesized sRGB */
+    {536, 0x1b34acea},
+    /* ColorSync 4.3 sRGB ICC Profile */
+    {20420, 0x0906b828},
+    /* ICC official sRGB v4 Preference */
+    {60960, 0xbbef7812},
+    /* ICC official sRGB v4 Preference Display Class */
+    {60988, 0x306fd8ae},
+    /* ICC official sRGB v4 Appearance */
+    {63868, 0x8726d21c},
+    /* ICC official v2 2014 sRGB */
+    {3024, 0x991713d0},
+    /* krita default sRGB */
+    {9080, 0x0ee2c1e3},
+};
+
 static inline uint32_t tag_array_to_uint32(const uint8_t *tag) {
     uint32_t ret = tag[0];
     for (int i = 1; i < 4; i++)
@@ -96,7 +160,7 @@ static inline void uint32_to_tag_array(uint8_t *tag, uint32_t made) {
         tag[i] = (made >> (24 - (8 * i))) & 0xFF;
 }
 
-UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
+static UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
     size_t read;
     uint8_t tag[4];
     UmbPngChunk *chunk = calloc(1, sizeof(UmbPngChunk));
@@ -110,7 +174,7 @@ UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
     if (!read)
         goto fail;
     chunk->data_size = tag_array_to_uint32(tag);
-    
+
     read = fread(tag, 4, 1, in);
     if (!read)
         goto fail;
@@ -118,7 +182,7 @@ UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
 
     if (fseek(in, chunk->data_size, SEEK_CUR) < 0)
         goto fail;
-    
+
     read = fread(tag, 4, 1, in);
     if (!read)
         goto fail;
@@ -140,7 +204,7 @@ fail:
     return NULL;
 }
 
-int read_chunk(FILE *in, UmbPngChunk *chunk, char **error) {
+static int read_chunk(FILE *in, UmbPngChunk *chunk, char **error) {
     int ret;
     uint8_t tag[4];
     size_t total = 0;
@@ -184,7 +248,7 @@ fail:
     return -1;
 }
 
-int write_chunk(FILE *out, const UmbPngChunk *chunk, char **error) {
+static int write_chunk(FILE *out, const UmbPngChunk *chunk, char **error) {
     uint8_t tag[4];
     size_t count;
     size_t total = 0;
@@ -219,8 +283,60 @@ fail:
     return -1;
 }
 
+static int checksum_iccp(const UmbPngChunk *iccp, UmbIccCheck *check, char **error) {
+    int ret;
+    uint8_t outbuf[4096];
+    uint32_t crc = crc32_z(0, Z_NULL, 0);
+    z_stream strm = { 0 };
+    size_t max_len = iccp->data_size - 2;
+    size_t name_len;
+    size_t total_size = 0;
+
+    if (iccp->data_size < 4)
+        goto fail;
+
+    if (max_len > 79)
+        max_len = 79;
+
+    name_len = strnlen((const char *)iccp->data, max_len);
+
+    ret = inflateInit(&strm);
+    if (ret != Z_OK)
+        goto fail;
+
+    if (*(iccp->data + name_len + 1))
+        goto fail;
+
+    strm.next_in = iccp->data + name_len + 2;
+    strm.avail_in = iccp->data_size - name_len - 2;
+
+    do {
+        size_t have;
+        strm.next_out = outbuf;
+        strm.avail_out = sizeof(outbuf);
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END)
+            goto fail;
+        have = sizeof(outbuf) - strm.avail_out;
+        crc = crc32_z(crc, outbuf, have);
+        total_size += have;
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&strm);
+
+    check->crc32 = crc;
+    check->size = total_size;
+
+    return 0;
+
+fail:
+    inflateEnd(&strm);
+    *error = "Error analyzing iCCP chunk data";
+    return -1;
+}
+
 /** frees everything except the base node */
-void free_chain(UmbPngChunkChain *file) {
+static void free_chain(UmbPngChunkChain *file) {
     UmbPngChunkChain *prev = file;
     if (!file)
         return;
@@ -343,6 +459,23 @@ int main(int argc, char *argv[]) {
         ret = read_chunk(in, curr_chain->chunk, &error);
         if (ret < 0)
             goto flush;
+        if (curr_chain->chunk->tag == tag_iCCP) {
+            UmbIccCheck check;
+            ret = checksum_iccp(curr_chain->chunk, &check, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                continue;
+            }
+            fprintf(stderr, "ICC Profile Length: %llu, Checksum: %08x\n", (long long unsigned)check.size, check.crc32);
+            for (int i = 0; i < sizeof(known_srgb_profiles)/sizeof(known_srgb_profiles[0]); i++) {
+                if (check.size == known_srgb_profiles[i].size && check.crc32 == known_srgb_profiles[i].crc32) {
+                    data.icc_is_srgb = 1;
+                    data.have_iccp = 0;
+                    data.have_srgb = 1;
+                    fprintf(stderr, "ICC profile matches known sRGB profile\n");
+                }
+            }
+        }
         curr_chain = curr_chain->next;
     }
 
@@ -385,10 +518,12 @@ int main(int argc, char *argv[]) {
         if ((curr_chain->chunk->tag == tag_cHRM || curr_chain->chunk->tag == tag_gAMA)
                 && (data.have_cicp || data.have_iccp || data.have_srgb))
             skip = 1;
-        if (curr_chain->chunk->tag == tag_sRGB && data.have_iccp)
+        if (curr_chain->chunk->tag == tag_sRGB && (data.have_iccp || data.icc_is_srgb))
             skip = 1;
         /* not strictly spec compliant but cICP and sRGB both present is very likely just sRGB */
         if (curr_chain->chunk->tag == tag_cICP && !data.have_iccp && data.have_srgb)
+            skip = 1;
+        if (curr_chain->chunk->tag == tag_iCCP && data.icc_is_srgb)
             skip = 1;
         if (skip) {
             uint32_to_tag_array(tag, curr_chain->chunk->tag);
@@ -398,13 +533,16 @@ int main(int argc, char *argv[]) {
             if (ret < 0)
                 goto flush;
         }
-        if (curr_chain->chunk->tag == tag_IHDR && !data.have_cicp && !data.have_srgb
-                                               && !data.have_iccp && !data.have_gama_chrm) {
+        if (curr_chain->chunk->tag == tag_IHDR && (data.icc_is_srgb ||
+                !data.have_cicp && !data.have_srgb && !data.have_iccp && !data.have_gama_chrm)) {
             fprintf(stderr, "Inserting default sRGB chunk\n");
             ret = write_chunk(out, &default_srgb, &error);
-            if (ret < 0)
+            if (ret < 0) {
+                fprintf(stderr, "%s: %s\n", argv[0], error);
                 goto flush;
+            }
         }
+
         curr_chain = curr_chain->next;
     }
 
