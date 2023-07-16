@@ -484,8 +484,8 @@ static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **erro
         case COLOR_TRUE:
         case COLOR_GRAY_A:
         case COLOR_RGBA:
-            if (data->depth != 8 && data->depth != 16 ||
-                    data->depth == 16 && data->color == COLOR_INDEXED) {
+            if ((data->depth != 8 && data->depth != 16) ||
+                    (data->depth == 16 && data->color == COLOR_INDEXED)) {
                 *error = "Illegal bit depth";
                 return -1;
             }
@@ -500,9 +500,9 @@ static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **erro
 
 static int write_idats(FILE *out, const UmbPngChunkChain **initial, char **error) {
     const UmbPngChunkChain *chain = *initial;
-    const UmbPngChunkChain *final;
+    const UmbPngChunkChain *final = NULL;
     uint64_t total_size = 0;
-    uint32_t crc = crc32_z(0, "IDAT", 4);
+    uint32_t crc = 0x35af061e; // crc32_z(0, "IDAT", 4);
     uint8_t tag[4];
     size_t count;
 
@@ -809,7 +809,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (curr_chain->chunk.tag == tag_IHDR && (data.icc_is_srgb ||
-                !data.have_cicp && !data.have_srgb && !data.have_iccp && !data.have_gama_chrm)) {
+                (!data.have_cicp && !data.have_srgb && !data.have_iccp && !data.have_gama_chrm))) {
             fprintf(stderr, "Inserting default sRGB chunk\n");
             ret = write_chunk(out, &default_srgb, &error);
             if (ret < 0) {
