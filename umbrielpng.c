@@ -91,7 +91,7 @@ typedef struct UmbPngChunk {
 } UmbPngChunk;
 
 typedef struct UmbPngChunkChain {
-    UmbPngChunk *chunk;
+    UmbPngChunk chunk;
     struct UmbPngChunkChain *prev;
     struct UmbPngChunkChain *next;
 } UmbPngChunkChain;
@@ -169,15 +169,9 @@ static inline void uint32_to_tag_array(uint8_t *tag, uint32_t made) {
         tag[i] = (made >> (24 - (8 * i))) & 0xFF;
 }
 
-static UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) {
+static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, char **error) {
     size_t read;
     uint8_t tag[4];
-    UmbPngChunk *chunk = calloc(1, sizeof(UmbPngChunk));
-
-    if (!chunk) {
-        *error = "Allocation failed";
-        return NULL;
-    }
 
     read = fread(tag, 4, 1, in);
     if (!read)
@@ -200,7 +194,7 @@ static UmbPngChunk *scan_chunk(FILE *in, const UmbPngChunk *last, char **error) 
     chunk->chunk_size = 12 + chunk->data_size;
     chunk->offset = last ? last->offset + last->chunk_size : 8;
 
-    return chunk;
+    return 0;
 
 fail:
     if (feof(in)) {
@@ -209,8 +203,8 @@ fail:
         perror(*error);
         *error = "Error reading chunk";
     }
-    freep(chunk);
-    return NULL;
+
+    return -1;
 }
 
 static int read_chunk(FILE *in, UmbPngChunk *chunk, char **error) {
@@ -515,10 +509,10 @@ static int write_idats(FILE *out, const UmbPngChunkChain **initial, char **error
     uint8_t tag[4];
     size_t count;
 
-    for (chain = *initial; chain->chunk->tag == tag_IDAT; chain = chain->next) {
-        total_size += chain->chunk->data_size;
+    for (chain = *initial; chain->chunk.tag == tag_IDAT; chain = chain->next) {
+        total_size += chain->chunk.data_size;
         if (total_size >= INT32_MAX) {
-            total_size -= chain->chunk->data_size;
+            total_size -= chain->chunk.data_size;
             final = chain->prev;
             break;
         }
@@ -535,11 +529,11 @@ static int write_idats(FILE *out, const UmbPngChunkChain **initial, char **error
 
     for (chain = *initial; chain && chain->prev != final; chain = chain->next) {
         size_t tot = 0;
-        while (tot < chain->chunk->data_size) {
-            count = fwrite(chain->chunk->data + tot, 1, chain->chunk->data_size - tot, out);
+        while (tot < chain->chunk.data_size) {
+            count = fwrite(chain->chunk.data + tot, 1, chain->chunk.data_size - tot, out);
             if (!count)
                 goto fail;
-            crc = crc32_z(crc, chain->chunk->data + tot, count);
+            crc = crc32_z(crc, chain->chunk.data + tot, count);
             tot += count;
         }
     }
@@ -571,9 +565,7 @@ static void free_chain(UmbPngChunkChain *file) {
     file = prev;
 
     while (file) {
-        if (file->chunk)
-            freep(file->chunk->data);
-        freep(file->chunk);
+        freep(file->chunk.data);
         file = file->prev;
         if (file)
             freep(file->next);
@@ -590,10 +582,10 @@ int main(int argc, char *argv[]) {
     size_t count;
     size_t idat_count = 0;
     UmbPngChunkChain png_file = { 0 };
-    UmbPngChunkChain *curr_chain = &png_file;
+    UmbPngChunkChain *curr_chain = NULL;
     UmbPngChunkChain *initial_idat = NULL;
     UmbPngScanData data = { 0 };
-    
+
     if (!strcmp("-", input))
         in = stdin;
     else
@@ -625,9 +617,10 @@ int main(int argc, char *argv[]) {
     while (1) {
         char *error = argv[0];
         uint8_t tag[5] = { 0 };
-        if (!curr_chain->chunk) {
-            curr_chain->chunk = scan_chunk(in, NULL, &error);
-            if (!curr_chain->chunk) {
+        if (!curr_chain) {
+            curr_chain = &png_file;
+            ret = scan_chunk(in, &curr_chain->chunk, NULL, &error);
+            if (ret < 0) {
                 if (!error)
                     break;
                 fprintf(stderr, "%s: %s\n", argv[0], error);
@@ -644,8 +637,8 @@ int main(int argc, char *argv[]) {
             curr_chain->next = next;
             next->prev = curr_chain;
             curr_chain = next;
-            curr_chain->chunk = scan_chunk(in, curr_chain->prev->chunk, &error);
-            if (!curr_chain->chunk) {
+            ret = scan_chunk(in, &curr_chain->chunk, &curr_chain->prev->chunk, &error);
+            if (ret < 0) {
                 if (curr_chain->prev)
                     curr_chain->prev->next = NULL;
                 freep(curr_chain);
@@ -656,7 +649,7 @@ int main(int argc, char *argv[]) {
                 goto flush;
             }
         }
-        switch (curr_chain->chunk->tag) {
+        switch (curr_chain->chunk.tag) {
         case tag_PLTE:
             data.have_plte = 1;
             break;
@@ -674,14 +667,14 @@ int main(int argc, char *argv[]) {
             data.have_gama_chrm = 1;
             break;
         }
-        if (curr_chain->chunk->tag != tag_IDAT || !idat_count) {
+        if (curr_chain->chunk.tag != tag_IDAT || !idat_count) {
             if (idat_count > 1)
                 fprintf(stderr, "Chunk: %llu more IDAT chunks\n", (long long unsigned)idat_count-1);
-            uint32_to_tag_array(tag, curr_chain->chunk->tag);
+            uint32_to_tag_array(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
-                tag, curr_chain->chunk->chunk_size, (long long unsigned)curr_chain->chunk->offset,
-                curr_chain->chunk->crc32);
-            idat_count = curr_chain->chunk->tag == tag_IDAT ? idat_count + 1 : 0;
+                tag, curr_chain->chunk.chunk_size, (long long unsigned)curr_chain->chunk.offset,
+                curr_chain->chunk.crc32);
+            idat_count = curr_chain->chunk.tag == tag_IDAT ? idat_count + 1 : 0;
         } else {
             idat_count++;
         }
@@ -689,12 +682,12 @@ int main(int argc, char *argv[]) {
 
     for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
         char *error = argv[0];
-        ret = read_chunk(in, curr_chain->chunk, &error);
+        ret = read_chunk(in, &curr_chain->chunk, &error);
         if (ret < 0)
             goto flush;
-        if (curr_chain->chunk->tag == tag_iCCP) {
+        if (curr_chain->chunk.tag == tag_iCCP) {
             UmbIccProfile profile = { 0 };
-            ret = inflate_iccp(curr_chain->chunk, &profile, &error);
+            ret = inflate_iccp(&curr_chain->chunk, &profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
                 freep(profile.icc_data);
@@ -713,8 +706,8 @@ int main(int argc, char *argv[]) {
             }
             freep(profile.icc_data);
         }
-        if (curr_chain->chunk->tag == tag_IHDR) {
-            ret = parse_ihdr(curr_chain->chunk, &data, &error);
+        if (curr_chain->chunk.tag == tag_IHDR) {
+            ret = parse_ihdr(&curr_chain->chunk, &data, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
                 continue;
@@ -722,13 +715,13 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Size: %" PRIu32 "x%" PRIu32 ", Color: %d-bit %s\n", data.width, data.height,
                 data.depth, color_names[data.color]);
         }
-        if (curr_chain->chunk->tag == tag_sBIT) {
-            if (curr_chain->chunk->data_size != color_channels[data.color]) {
+        if (curr_chain->chunk.tag == tag_sBIT) {
+            if (curr_chain->chunk.data_size != color_channels[data.color]) {
                 fprintf(stderr, "%s: Warning: Illegal sBIT chunk\n", argv[0]);
                 continue;
             }
             for (int i = 0; i < color_channels[data.color]; i++)
-                data.sbit[i] = curr_chain->chunk->data[i];
+                data.sbit[i] = curr_chain->chunk.data[i];
         }
     }
 
@@ -761,24 +754,24 @@ int main(int argc, char *argv[]) {
         int skip = 0;
         uint8_t tag[5] = { 0 };
         for (int i = 0; i < sizeof(strip_chunks)/sizeof(strip_chunks[0]); i++) {
-            if (strip_chunks[i] == curr_chain->chunk->tag) {
+            if (strip_chunks[i] == curr_chain->chunk.tag) {
                 skip = 1;
                 break;
             }
         }
-        if (curr_chain->chunk->tag == tag_hIST && !data.have_plte)
+        if (curr_chain->chunk.tag == tag_hIST && !data.have_plte)
             skip = 1;
-        if ((curr_chain->chunk->tag == tag_cHRM || curr_chain->chunk->tag == tag_gAMA)
+        if ((curr_chain->chunk.tag == tag_cHRM || curr_chain->chunk.tag == tag_gAMA)
                 && (data.have_cicp || data.have_iccp || data.have_srgb))
             skip = 1;
-        if (curr_chain->chunk->tag == tag_sRGB && (data.have_iccp || data.icc_is_srgb))
+        if (curr_chain->chunk.tag == tag_sRGB && (data.have_iccp || data.icc_is_srgb))
             skip = 1;
         /* not strictly spec compliant but cICP and sRGB both present is very likely just sRGB */
-        if (curr_chain->chunk->tag == tag_cICP && !data.have_iccp && data.have_srgb)
+        if (curr_chain->chunk.tag == tag_cICP && !data.have_iccp && data.have_srgb)
             skip = 1;
-        if (curr_chain->chunk->tag == tag_iCCP && data.icc_is_srgb)
+        if (curr_chain->chunk.tag == tag_iCCP && data.icc_is_srgb)
             skip = 1;
-        if (curr_chain->chunk->tag == tag_sBIT) {
+        if (curr_chain->chunk.tag == tag_sBIT) {
             skip = 1;
             for (int i = 0; i < color_channels[data.color]; i++) {
                 if (data.sbit[i] != data.depth) {
@@ -788,7 +781,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (curr_chain->chunk->tag == tag_IDAT) {
+        if (curr_chain->chunk.tag == tag_IDAT) {
             if (!initial_idat)
                 initial_idat = curr_chain;
         } else if (initial_idat) {
@@ -800,24 +793,25 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "%s: %s\n", argv[0], error);
                     goto flush;
                 }
-            } while (idat_chain && idat_chain->chunk->tag == tag_IDAT);
+            } while (idat_chain && idat_chain->chunk.tag == tag_IDAT);
             initial_idat = NULL;
         }
 
         if (skip) {
-            uint32_to_tag_array(tag, curr_chain->chunk->tag);
+            uint32_to_tag_array(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Stripping chunk: %s\n", tag);
             continue;
-        } else if (curr_chain->chunk->tag != tag_IDAT) {
-            uint32_to_tag_array(tag, curr_chain->chunk->tag);
+        } else if (curr_chain->chunk.tag != tag_IDAT) {
+            uint32_to_tag_array(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Writing chunk: %s\n", tag);
-            ret = write_chunk(out, curr_chain->chunk, &error);
+            ret = write_chunk(out, &curr_chain->chunk, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: %s\n", argv[0], error);
                 goto flush;
             }
         }
-        if (curr_chain->chunk->tag == tag_IHDR && (data.icc_is_srgb ||
+
+        if (curr_chain->chunk.tag == tag_IHDR && (data.icc_is_srgb ||
                 !data.have_cicp && !data.have_srgb && !data.have_iccp && !data.have_gama_chrm)) {
             fprintf(stderr, "Inserting default sRGB chunk\n");
             ret = write_chunk(out, &default_srgb, &error);
