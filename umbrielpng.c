@@ -45,6 +45,8 @@
 
 #define maketag(a,b,c,d) ((((uint32_t)(a)) << 24) | (((uint32_t)(b)) << 16) |\
                          (((uint32_t)(c)) << 8) | (uint32_t)(d))
+#define abs(a) ((a) < 0 ? -(a) : (a))
+#define within(a,b,tolerance) (abs((a)-(b)) <= (tolerance))
 
 #define freep(p) do {   \
     if (p) free(p);     \
@@ -118,10 +120,10 @@ typedef struct UmbPngScanData {
     int sbit[4];
 } UmbPngScanData;
 
-typedef struct UmbIccCheck {
+typedef struct UmbIccProfile {
     size_t size;
-    uint32_t crc32;
-} UmbIccCheck;
+    uint8_t *icc_data;
+} UmbIccProfile;
 
 static const char *color_names[7] = {
     "Grayscale",
@@ -153,27 +155,6 @@ static const UmbPngChunk default_srgb = {
 static const uint32_t strip_chunks[8] = {
     tag_bKGD, tag_eXIf, tag_pHYs, tag_sPLT,
     tag_tIME, tag_tEXt, tag_zTXt, tag_iTXt,
-};
-
-static const UmbIccCheck known_srgb_profiles[] = {
-    /* GIMP built-in sRGB */
-    {672, 0x07b94f91}, {672, 0x103c272a}, {672, 0x16c98593}, {672, 0x1d533259},
-    {672, 0x3085a3ae}, {672, 0x36669045}, {672, 0x41ad7657}, {672, 0x7e1f1d56},
-    {672, 0xe077ec7d}, {672, 0xe5aa80d5}, {672, 0xec7778c0}, {672, 0x630a527d},
-    /* libjxl synthesized sRGB */
-    {536, 0x1b34acea},
-    /* ColorSync 4.3 sRGB ICC Profile */
-    {20420, 0x0906b828},
-    /* ICC official sRGB v4 Preference */
-    {60960, 0xbbef7812},
-    /* ICC official sRGB v4 Preference Display Class */
-    {60988, 0x306fd8ae},
-    /* ICC official sRGB v4 Appearance */
-    {63868, 0x8726d21c},
-    /* ICC official v2 2014 sRGB */
-    {3024, 0x991713d0},
-    /* krita default sRGB */
-    {9080, 0x0ee2c1e3},
 };
 
 static inline uint32_t tag_array_to_uint32(const uint8_t *tag) {
@@ -311,14 +292,13 @@ fail:
     return -1;
 }
 
-static int checksum_iccp(const UmbPngChunk *iccp, UmbIccCheck *check, char **error) {
+static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, char **error) {
     int ret;
-    uint8_t outbuf[4096];
-    uint32_t crc = crc32_z(0, Z_NULL, 0);
     z_stream strm = { 0 };
     size_t max_len = iccp->data_size - 2;
     size_t name_len;
     size_t total_size = 0;
+    size_t icc_buffer_size = 4096;
 
     if (iccp->data_size < 4)
         goto fail;
@@ -335,32 +315,149 @@ static int checksum_iccp(const UmbPngChunk *iccp, UmbIccCheck *check, char **err
     if (*(iccp->data + name_len + 1))
         goto fail;
 
+    profile->icc_data = realloc(profile->icc_data, icc_buffer_size);
+    if (!profile->icc_data)
+        goto fail;
+
     strm.next_in = iccp->data + name_len + 2;
     strm.avail_in = iccp->data_size - name_len - 2;
 
     do {
         size_t have;
-        strm.next_out = outbuf;
-        strm.avail_out = sizeof(outbuf);
+        if (icc_buffer_size <= total_size) {
+            icc_buffer_size *= 2;
+            profile->icc_data = realloc(profile->icc_data, icc_buffer_size);
+            if (!profile->icc_data)
+                goto fail;
+        }
+        strm.next_out = profile->icc_data + total_size;
+        strm.avail_out = icc_buffer_size - total_size;
         ret = inflate(&strm, Z_NO_FLUSH);
         if (ret != Z_OK && ret != Z_STREAM_END)
             goto fail;
-        have = sizeof(outbuf) - strm.avail_out;
-        crc = crc32_z(crc, outbuf, have);
+        have = icc_buffer_size - total_size - strm.avail_out;
         total_size += have;
     } while (ret != Z_STREAM_END);
 
     inflateEnd(&strm);
 
-    check->crc32 = crc;
-    check->size = total_size;
+    profile->size = total_size;
 
     return 0;
 
 fail:
     inflateEnd(&strm);
+    freep(profile->icc_data);
     *error = "Error analyzing iCCP chunk data";
     return -1;
+}
+
+static int matches_srgb(UmbIccProfile *profile, char **error) {
+    uint8_t *header;
+    uint32_t tag_count;
+    uint8_t tag[5] = { 0 };
+    int32_t wp[3] = { 0 };
+    int32_t red[3] = { 0 };
+    int32_t green[3] = { 0 };
+    int32_t blue[3] = { 0 };
+
+    if (profile->size < 144)
+        return 0;
+
+    if (tag_array_to_uint32(profile->icc_data) != profile->size) {
+        *error = "ICC profile size mismatch";
+        return 0;
+    }
+
+    tag_count = tag_array_to_uint32(profile->icc_data + 128);
+    header = profile->icc_data + 132;
+
+    for (uint32_t i = 0; i < tag_count; i++, header += 12) {
+        uint32_t sig, offset, size;
+        if (header + 12 > profile->icc_data + profile->size)
+            return 0;
+        sig = tag_array_to_uint32(header);
+        offset = tag_array_to_uint32(header + 4);
+        size = tag_array_to_uint32(header + 8);
+        if (offset + size > profile->size)
+            return 0;
+        uint32_to_tag_array(tag, sig);
+        if (sig == maketag('w','t','p','t')) {
+            if (size != 20)
+                return 0;
+            sig = tag_array_to_uint32(profile->icc_data + offset);
+            if (sig != maketag('X','Y','Z',' '))
+                return 0;
+            wp[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
+            wp[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
+            wp[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+        } else if (sig == maketag('r','X','Y','Z')) {
+            if (size != 20)
+                return 0;
+            sig = tag_array_to_uint32(profile->icc_data + offset);
+            if (sig != maketag('X','Y','Z',' '))
+                return 0;
+            red[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
+            red[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
+            red[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+        } else if (sig == maketag('g','X','Y','Z')) {
+            if (size != 20)
+                return 0;
+            sig = tag_array_to_uint32(profile->icc_data + offset);
+            if (sig != maketag('X','Y','Z',' '))
+                return 0;
+            green[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
+            green[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
+            green[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+        } else if (sig == maketag('b','X','Y','Z')) {
+            if (size != 20)
+                return 0;
+            sig = tag_array_to_uint32(profile->icc_data + offset);
+            if (sig != maketag('X','Y','Z',' '))
+                return 0;
+            blue[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
+            blue[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
+            blue[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+        } else if (sig == maketag('r','T','R','C') || sig == maketag('g','T','R','C') ||
+                   sig == maketag('b','T','R','C')) {
+            if (size < 12)
+                return 0;
+            sig = tag_array_to_uint32(profile->icc_data + offset);
+            if (sig == maketag('p','a','r','a')) {
+                uint32_t type = tag_array_to_uint32(profile->icc_data + offset + 8);
+                int32_t g, a, b, c, d, e = 0, f = 0;
+                if (type != 0x30000 && type != 0x40000)
+                    return 0;
+                if (size != 8 + (type >> 13))
+                    return 0;
+                g = tag_array_to_uint32(profile->icc_data + offset + 12);
+                a = tag_array_to_uint32(profile->icc_data + offset + 16);
+                b = tag_array_to_uint32(profile->icc_data + offset + 20);
+                c = tag_array_to_uint32(profile->icc_data + offset + 24);
+                d = tag_array_to_uint32(profile->icc_data + offset + 28);
+                if (type == 0x40000) {
+                    e = tag_array_to_uint32(profile->icc_data + offset + 32);
+                    f = tag_array_to_uint32(profile->icc_data + offset + 36); 
+                }
+                if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
+                    !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
+                    return 0;
+            } else {
+                return 0;
+            }
+        }
+    }
+
+    if (!within(wp[0],63190,32) || !within(wp[1],65536,32) || !within(wp[2],54061,32))
+        return 0;
+    if (!within(red[0],28564,32) || !within(red[1],14574,32) || !within(red[2],912,32))
+        return 0;
+    if (!within(green[0],25253,32) || !within(green[1],46992,32) || !within(green[2],6366,32))
+        return 0;
+    if (!within(blue[0],9373,32) || !within(blue[1],3971,32) || !within(blue[2],46782,32))
+        return 0;
+
+    return 1;
 }
 
 static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **error) {
@@ -410,6 +507,58 @@ static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **erro
     return 0;
 }
 
+static int write_idats(FILE *out, const UmbPngChunkChain **initial, char **error) {
+    const UmbPngChunkChain *chain = *initial;
+    const UmbPngChunkChain *final;
+    uint64_t total_size = 0;
+    uint32_t crc = crc32_z(0, "IDAT", 4);
+    uint8_t tag[4];
+    size_t count;
+
+    for (chain = *initial; chain->chunk->tag == tag_IDAT; chain = chain->next) {
+        total_size += chain->chunk->data_size;
+        if (total_size >= INT32_MAX) {
+            total_size -= chain->chunk->data_size;
+            final = chain->prev;
+            break;
+        }
+        final = chain;
+    }
+
+    uint32_to_tag_array(tag, total_size);
+    count = fwrite(tag, 4, 1, out);
+    if (!count)
+        goto fail;
+    count = fwrite("IDAT", 4, 1, out);
+    if (!count)
+        goto fail;
+
+    for (chain = *initial; chain && chain->prev != final; chain = chain->next) {
+        size_t tot = 0;
+        while (tot < chain->chunk->data_size) {
+            count = fwrite(chain->chunk->data + tot, 1, chain->chunk->data_size - tot, out);
+            if (!count)
+                goto fail;
+            crc = crc32_z(crc, chain->chunk->data + tot, count);
+            tot += count;
+        }
+    }
+
+    uint32_to_tag_array(tag, crc);
+    count = fwrite(tag, 4, 1, out);
+    if (!count)
+        goto fail;
+
+    *initial = final->next;
+
+    return 0;
+
+fail:
+    perror(*error);
+    *error = "Error writing chunk data";
+    return -1;
+}
+
 /** frees everything except the base node */
 static void free_chain(UmbPngChunkChain *file) {
     UmbPngChunkChain *prev = file;
@@ -439,8 +588,10 @@ int main(int argc, char *argv[]) {
     FILE *out = NULL;
     uint8_t sig[8];
     size_t count;
+    size_t idat_count = 0;
     UmbPngChunkChain png_file = { 0 };
     UmbPngChunkChain *curr_chain = &png_file;
+    UmbPngChunkChain *initial_idat = NULL;
     UmbPngScanData data = { 0 };
     
     if (!strcmp("-", input))
@@ -523,9 +674,17 @@ int main(int argc, char *argv[]) {
             data.have_gama_chrm = 1;
             break;
         }
-        uint32_to_tag_array(tag, curr_chain->chunk->tag);
-        fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
-            tag, curr_chain->chunk->chunk_size, (long long unsigned)curr_chain->chunk->offset, curr_chain->chunk->crc32);
+        if (curr_chain->chunk->tag != tag_IDAT || !idat_count) {
+            if (idat_count > 1)
+                fprintf(stderr, "Chunk: %llu more IDAT chunks\n", (long long unsigned)idat_count-1);
+            uint32_to_tag_array(tag, curr_chain->chunk->tag);
+            fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
+                tag, curr_chain->chunk->chunk_size, (long long unsigned)curr_chain->chunk->offset,
+                curr_chain->chunk->crc32);
+            idat_count = curr_chain->chunk->tag == tag_IDAT ? idat_count + 1 : 0;
+        } else {
+            idat_count++;
+        }
     }
 
     for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
@@ -534,21 +693,25 @@ int main(int argc, char *argv[]) {
         if (ret < 0)
             goto flush;
         if (curr_chain->chunk->tag == tag_iCCP) {
-            UmbIccCheck check;
-            ret = checksum_iccp(curr_chain->chunk, &check, &error);
+            UmbIccProfile profile = { 0 };
+            ret = inflate_iccp(curr_chain->chunk, &profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                freep(profile.icc_data);
                 continue;
             }
-            fprintf(stderr, "ICC Profile Length: %llu, Checksum: %08x\n", (long long unsigned)check.size, check.crc32);
-            for (int i = 0; i < sizeof(known_srgb_profiles)/sizeof(known_srgb_profiles[0]); i++) {
-                if (check.size == known_srgb_profiles[i].size && check.crc32 == known_srgb_profiles[i].crc32) {
-                    data.icc_is_srgb = 1;
-                    data.have_iccp = 0;
-                    data.have_srgb = 1;
-                    fprintf(stderr, "ICC profile matches known sRGB profile\n");
-                }
+            fprintf(stderr, "ICC Profile Length: %llu\n", (long long unsigned)profile.size);
+            ret = matches_srgb(&profile, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                freep(profile.icc_data);
+                continue;
             }
+            if (ret) {
+                fprintf(stderr, "ICC profile matches sRGB profile\n");
+                data.icc_is_srgb = 1;
+            }
+            freep(profile.icc_data);
         }
         if (curr_chain->chunk->tag == tag_IHDR) {
             ret = parse_ihdr(curr_chain->chunk, &data, &error);
@@ -624,14 +787,35 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+
+        if (curr_chain->chunk->tag == tag_IDAT) {
+            if (!initial_idat)
+                initial_idat = curr_chain;
+        } else if (initial_idat) {
+            const UmbPngChunkChain *idat_chain = initial_idat;
+            do {
+                fprintf(stderr, "Writing chunk: IDAT\n");
+                ret = write_idats(out, &idat_chain, &error);
+                if (ret < 0) {
+                    fprintf(stderr, "%s: %s\n", argv[0], error);
+                    goto flush;
+                }
+            } while (idat_chain && idat_chain->chunk->tag == tag_IDAT);
+            initial_idat = NULL;
+        }
+
         if (skip) {
             uint32_to_tag_array(tag, curr_chain->chunk->tag);
             fprintf(stderr, "Stripping chunk: %s\n", tag);
             continue;
-        } else {
+        } else if (curr_chain->chunk->tag != tag_IDAT) {
+            uint32_to_tag_array(tag, curr_chain->chunk->tag);
+            fprintf(stderr, "Writing chunk: %s\n", tag);
             ret = write_chunk(out, curr_chain->chunk, &error);
-            if (ret < 0)
+            if (ret < 0) {
+                fprintf(stderr, "%s: %s\n", argv[0], error);
                 goto flush;
+            }
         }
         if (curr_chain->chunk->tag == tag_IHDR && (data.icc_is_srgb ||
                 !data.have_cicp && !data.have_srgb && !data.have_iccp && !data.have_gama_chrm)) {
