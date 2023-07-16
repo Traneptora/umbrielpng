@@ -158,10 +158,7 @@ static const uint32_t strip_chunks[8] = {
 };
 
 static inline uint32_t tag_array_to_uint32(const uint8_t *tag) {
-    uint32_t ret = tag[0];
-    for (int i = 1; i < 4; i++)
-        ret = (ret << 8) | tag[i];
-    return ret;
+   return maketag(tag[0],tag[1],tag[2],tag[3]);
 }
 
 static inline void uint32_to_tag_array(uint8_t *tag, uint32_t made) {
