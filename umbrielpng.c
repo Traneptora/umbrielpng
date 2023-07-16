@@ -434,6 +434,7 @@ static int matches_srgb(UmbIccProfile *profile, char **error) {
             if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
                 !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
                 return 0;
+        }
     }
 
     if (!within(wp[0],63190,32) || !within(wp[1],65536,32) || !within(wp[2],54061,32))
