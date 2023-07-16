@@ -411,32 +411,29 @@ static int matches_srgb(UmbIccProfile *profile, char **error) {
             blue[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
         } else if (sig == maketag('r','T','R','C') || sig == maketag('g','T','R','C') ||
                    sig == maketag('b','T','R','C')) {
+            int32_t g, a, b, c, d, e = 0, f = 0;
             if (size < 12)
                 return 0;
             sig = tag_array_to_uint32(profile->icc_data + offset);
-            if (sig == maketag('p','a','r','a')) {
-                uint32_t type = tag_array_to_uint32(profile->icc_data + offset + 8);
-                int32_t g, a, b, c, d, e = 0, f = 0;
-                if (type != 0x30000 && type != 0x40000)
-                    return 0;
-                if (size != 8 + (type >> 13))
-                    return 0;
-                g = tag_array_to_uint32(profile->icc_data + offset + 12);
-                a = tag_array_to_uint32(profile->icc_data + offset + 16);
-                b = tag_array_to_uint32(profile->icc_data + offset + 20);
-                c = tag_array_to_uint32(profile->icc_data + offset + 24);
-                d = tag_array_to_uint32(profile->icc_data + offset + 28);
-                if (type == 0x40000) {
-                    e = tag_array_to_uint32(profile->icc_data + offset + 32);
-                    f = tag_array_to_uint32(profile->icc_data + offset + 36); 
-                }
-                if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
-                    !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
-                    return 0;
-            } else {
+            if (sig != maketag('p','a','r','a'))
                 return 0;
+            sig = tag_array_to_uint32(profile->icc_data + offset + 8);
+            if (sig != 0x30000 && sig != 0x40000)
+                return 0;
+            if (size != 8 + (sig >> 13))
+                return 0;
+            g = tag_array_to_uint32(profile->icc_data + offset + 12);
+            a = tag_array_to_uint32(profile->icc_data + offset + 16);
+            b = tag_array_to_uint32(profile->icc_data + offset + 20);
+            c = tag_array_to_uint32(profile->icc_data + offset + 24);
+            d = tag_array_to_uint32(profile->icc_data + offset + 28);
+            if (sig == 0x40000) {
+                e = tag_array_to_uint32(profile->icc_data + offset + 32);
+                f = tag_array_to_uint32(profile->icc_data + offset + 36);
             }
-        }
+            if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
+                !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
+                return 0;
     }
 
     if (!within(wp[0],63190,32) || !within(wp[1],65536,32) || !within(wp[2],54061,32))
