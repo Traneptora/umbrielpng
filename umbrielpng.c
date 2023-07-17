@@ -108,9 +108,12 @@ typedef struct UmbPngScanData {
     int have_cicp;
     int have_iccp;
     int have_srgb;
-    int have_gama_chrm;
+    int have_chrm;
+    int have_gama;
     int have_plte;
     int icc_is_srgb;
+    int cicp_is_srgb;
+    int chrm_is_srgb;
 
     uint32_t width;
     uint32_t height;
@@ -143,13 +146,17 @@ static const uint8_t png_signature[8] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 };
 
-static const UmbPngChunk default_srgb = {
+static const UmbPngChunk default_srgb_chunk = {
     .chunk_size = 13,
     .tag = tag_sRGB,
     .data = (uint8_t[]){1},
     .data_size = 1,
     .crc32 = 0xd9c92c7f,
     .offset = 12,
+};
+
+static const uint32_t default_chrm_data[8] = {
+    31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000,
 };
 
 static const uint32_t strip_chunks[8] = {
@@ -580,6 +587,7 @@ int main(int argc, char *argv[]) {
     UmbPngChunkChain *curr_chain = NULL;
     UmbPngChunkChain *initial_idat = NULL;
     UmbPngScanData data = { 0 };
+    int default_srgb = 0;
 
     if (!strcmp("-", input))
         in = stdin;
@@ -658,8 +666,10 @@ int main(int argc, char *argv[]) {
             data.have_iccp = 1;
             break;
         case tag_gAMA:
+            data.have_gama = 1;
+            break;
         case tag_cHRM:
-            data.have_gama_chrm = 1;
+            data.have_chrm = 1;
             break;
         }
         if (curr_chain->chunk.tag != tag_IDAT || !idat_count) {
@@ -709,14 +719,32 @@ int main(int argc, char *argv[]) {
             }
             fprintf(stderr, "Size: %" PRIu32 "x%" PRIu32 ", Color: %d-bit %s\n", data.width, data.height,
                 data.depth, color_names[data.color]);
-        }
-        if (curr_chain->chunk.tag == tag_sBIT) {
+        } else if (curr_chain->chunk.tag == tag_sBIT) {
             if (curr_chain->chunk.data_size != color_channels[data.color]) {
                 fprintf(stderr, "%s: Warning: Illegal sBIT chunk\n", argv[0]);
                 continue;
             }
             for (int i = 0; i < color_channels[data.color]; i++)
                 data.sbit[i] = curr_chain->chunk.data[i];
+        } else if (curr_chain->chunk.tag == tag_cICP) {
+            if (curr_chain->chunk.data_size != 4) {
+                fprintf(stderr, "%s: Warning: Illegal cICP size\n", argv[0]);
+                continue;
+            }
+            if (tag_array_to_uint32(curr_chain->chunk.data) == 0x010d0001) {
+                fprintf(stderr, "cICP represents sRGB space\n");
+                data.cicp_is_srgb = 1;
+            }
+        } else if (curr_chain->chunk.tag == tag_cHRM) {
+            uint32_t values[8];
+            if (curr_chain->chunk.data_size != 32) {
+                fprintf(stderr, "%s: Warning: Illegal cHRM size\n", argv[0]);
+                continue;
+            }
+            for (int i = 0; i < 8; i++)
+                values[i] = tag_array_to_uint32(curr_chain->chunk.data + (4 * i));
+            if (!memcmp(values, default_chrm_data, sizeof(values)))
+                data.chrm_is_srgb = 1;
         }
     }
 
@@ -744,6 +772,9 @@ int main(int argc, char *argv[]) {
     }
 
     curr_chain = &png_file;
+    default_srgb = data.cicp_is_srgb || (!data.have_cicp && (data.icc_is_srgb ||
+        (!data.have_iccp && !data.have_srgb && !data.have_gama &&
+        (!data.have_chrm || data.chrm_is_srgb))));
     for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
         char *error = argv[0];
         int skip = 0;
@@ -759,12 +790,11 @@ int main(int argc, char *argv[]) {
         if ((curr_chain->chunk.tag == tag_cHRM || curr_chain->chunk.tag == tag_gAMA)
                 && (data.have_cicp || data.have_iccp || data.have_srgb))
             skip = 1;
-        if (curr_chain->chunk.tag == tag_sRGB && (data.have_iccp || data.icc_is_srgb))
+        if (curr_chain->chunk.tag == tag_sRGB && (default_srgb || data.have_iccp || data.have_cicp))
             skip = 1;
-        /* not strictly spec compliant but cICP and sRGB both present is very likely just sRGB */
-        if (curr_chain->chunk.tag == tag_cICP && !data.have_iccp && data.have_srgb)
+        if (curr_chain->chunk.tag == tag_iCCP && (default_srgb || data.have_cicp))
             skip = 1;
-        if (curr_chain->chunk.tag == tag_iCCP && data.icc_is_srgb)
+        if (curr_chain->chunk.tag == tag_cICP && default_srgb)
             skip = 1;
         if (curr_chain->chunk.tag == tag_sBIT) {
             skip = 1;
@@ -775,7 +805,6 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-
         if (curr_chain->chunk.tag == tag_IDAT) {
             if (!initial_idat)
                 initial_idat = curr_chain;
@@ -791,7 +820,6 @@ int main(int argc, char *argv[]) {
             } while (idat_chain && idat_chain->chunk.tag == tag_IDAT);
             initial_idat = NULL;
         }
-
         if (skip) {
             uint32_to_tag_array(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Stripping chunk: %s\n", tag);
@@ -806,10 +834,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (curr_chain->chunk.tag == tag_IHDR && (data.icc_is_srgb ||
-                (!data.have_cicp && !data.have_srgb && !data.have_iccp && !data.have_gama_chrm))) {
+        if (curr_chain->chunk.tag == tag_IHDR && default_srgb) {
             fprintf(stderr, "Inserting default sRGB chunk\n");
-            ret = write_chunk(out, &default_srgb, &error);
+            ret = write_chunk(out, &default_srgb_chunk, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: %s\n", argv[0], error);
                 goto flush;
