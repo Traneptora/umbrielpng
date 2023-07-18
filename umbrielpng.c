@@ -758,14 +758,14 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         }
     }
 
+    fclose(in);
+    in = NULL;
+
     if (!output) {
         if (!options->fix)
             goto flush;
         output = input;
     }
-
-    fclose(in);
-    in = NULL;
 
     if (!strcmp("-", output))
         out = stdout;
