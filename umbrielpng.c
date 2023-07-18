@@ -128,6 +128,15 @@ typedef struct UmbIccProfile {
     uint8_t *icc_data;
 } UmbIccProfile;
 
+typedef struct UmbPngOptions {
+    int verbose;
+    int fix;
+    const char *argv0;
+    const char *input;
+    const char *output;
+} UmbPngOptions;
+
+
 static const char *color_names[7] = {
     "Grayscale",
     NULL,
@@ -173,7 +182,7 @@ static inline void uint32_to_tag_array(uint8_t *tag, uint32_t made) {
         tag[i] = (made >> (24 - (8 * i))) & 0xFF;
 }
 
-static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, char **error) {
+static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, const char **error) {
     size_t read;
     uint8_t tag[4];
 
@@ -211,7 +220,7 @@ fail:
     return -1;
 }
 
-static int read_chunk(FILE *in, UmbPngChunk *chunk, char **error) {
+static int read_chunk(FILE *in, UmbPngChunk *chunk, const char **error) {
     int ret;
     uint8_t tag[4];
     size_t total = 0;
@@ -255,7 +264,7 @@ fail:
     return -1;
 }
 
-static int write_chunk(FILE *out, const UmbPngChunk *chunk, char **error) {
+static int write_chunk(FILE *out, const UmbPngChunk *chunk, const char **error) {
     uint8_t tag[4];
     size_t count;
     size_t total = 0;
@@ -290,7 +299,7 @@ fail:
     return -1;
 }
 
-static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, char **error) {
+static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, const char **error) {
     int ret;
     z_stream strm = { 0 };
     size_t max_len = iccp->data_size - 2;
@@ -350,7 +359,7 @@ fail:
     return -1;
 }
 
-static int matches_srgb(UmbIccProfile *profile, char **error) {
+static int matches_srgb(UmbIccProfile *profile, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
     uint8_t tag[5] = { 0 };
@@ -456,7 +465,7 @@ static int matches_srgb(UmbIccProfile *profile, char **error) {
     return 1;
 }
 
-static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **error) {
+static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, const char **error) {
 
     if (ihdr->data_size != 13) {
         *error = "Illegal IHDR chunk size";
@@ -503,7 +512,7 @@ static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, char **erro
     return 0;
 }
 
-static int write_idats(FILE *out, const UmbPngChunkChain **initial, char **error) {
+static int write_idats(FILE *out, const UmbPngChunkChain **initial, const char **error) {
     const UmbPngChunkChain *chain = *initial;
     const UmbPngChunkChain *final = NULL;
     uint64_t total_size = 0;
@@ -574,10 +583,8 @@ static void free_chain(UmbPngChunkChain *file) {
     }
 }
 
-int main(int argc, char *argv[]) {
+static int process_png(const char *input, const char *output, const UmbPngOptions *options) {
     int ret = 0;
-    const char *input = argc > 1 ? argv[1] : "-";
-    const char *output = argc > 2 ? argv[2] : NULL;
     FILE *in = NULL;
     FILE *out = NULL;
     uint8_t sig[8];
@@ -588,13 +595,14 @@ int main(int argc, char *argv[]) {
     UmbPngChunkChain *initial_idat = NULL;
     UmbPngScanData data = { 0 };
     int default_srgb = 0;
+    const char *argv0 = options->argv0;
 
     if (!strcmp("-", input))
         in = stdin;
     else
         in = fopen(input, "r");
     if (!in) {
-        perror(argv[0]);
+        perror(argv0);
         ret = 1;
         goto flush;
     }
@@ -602,23 +610,23 @@ int main(int argc, char *argv[]) {
     count = fread(sig, 8, 1, in);
     if (!count) {
         if (ferror(in))
-            perror(argv[0]);
+            perror(argv0);
         else if (feof(in))
-            fprintf(stderr, "%s: Premature end of file\n", argv[0]);
+            fprintf(stderr, "%s: Premature end of file\n", argv0);
         ret = 2;
         goto flush;
     }
 
     if (memcmp(sig, png_signature, 8)) {
-        fprintf(stderr, "%s: %s: Invalid PNG signature\n", argv[0], input);
+        fprintf(stderr, "%s: %s: Invalid PNG signature\n", argv0, input);
         ret = 2;
         goto flush;
     }
 
-    fprintf(stderr, "PNG signature found\n");
+    fprintf(stderr, "PNG signature found: %s\n", input);
 
     while (1) {
-        char *error = argv[0];
+        const char *error = argv0;
         uint8_t tag[5] = { 0 };
         if (!curr_chain) {
             curr_chain = &png_file;
@@ -626,14 +634,14 @@ int main(int argc, char *argv[]) {
             if (ret < 0) {
                 if (!error)
                     break;
-                fprintf(stderr, "%s: %s\n", argv[0], error);
+                fprintf(stderr, "%s: %s\n", argv0, error);
                 ret = 2;
                 goto flush;
             }
         } else {
             UmbPngChunkChain *next = calloc(1, sizeof(UmbPngChunkChain));
             if (!next) {
-                fprintf(stderr, "%s: Allocation failure\n", argv[0]);
+                fprintf(stderr, "%s: Allocation failure\n", argv0);
                 ret = 2;
                 goto flush;
             }
@@ -647,7 +655,7 @@ int main(int argc, char *argv[]) {
                 freep(curr_chain);
                 if (!error)
                     break;
-                fprintf(stderr, "%s: %s\n", argv[0], error);
+                fprintf(stderr, "%s: %s\n", argv0, error);
                 ret = 2;
                 goto flush;
             }
@@ -686,7 +694,7 @@ int main(int argc, char *argv[]) {
     }
 
     for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
-        char *error = argv[0];
+        const char *error = argv0;
         ret = read_chunk(in, &curr_chain->chunk, &error);
         if (ret < 0)
             goto flush;
@@ -694,14 +702,14 @@ int main(int argc, char *argv[]) {
             UmbIccProfile profile = { 0 };
             ret = inflate_iccp(&curr_chain->chunk, &profile, &error);
             if (ret < 0) {
-                fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                fprintf(stderr, "%s: Warning: %s\n", argv0, error);
                 freep(profile.icc_data);
                 continue;
             }
             fprintf(stderr, "ICC Profile Length: %llu\n", (long long unsigned)profile.size);
             ret = matches_srgb(&profile, &error);
             if (ret < 0) {
-                fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                fprintf(stderr, "%s: Warning: %s\n", argv0, error);
                 freep(profile.icc_data);
                 continue;
             }
@@ -714,21 +722,21 @@ int main(int argc, char *argv[]) {
         if (curr_chain->chunk.tag == tag_IHDR) {
             ret = parse_ihdr(&curr_chain->chunk, &data, &error);
             if (ret < 0) {
-                fprintf(stderr, "%s: Warning: %s\n", argv[0], error);
+                fprintf(stderr, "%s: Warning: %s\n", argv0, error);
                 continue;
             }
             fprintf(stderr, "Size: %" PRIu32 "x%" PRIu32 ", Color: %d-bit %s\n", data.width, data.height,
                 data.depth, color_names[data.color]);
         } else if (curr_chain->chunk.tag == tag_sBIT) {
             if (curr_chain->chunk.data_size != color_channels[data.color]) {
-                fprintf(stderr, "%s: Warning: Illegal sBIT chunk\n", argv[0]);
+                fprintf(stderr, "%s: Warning: Illegal sBIT chunk\n", argv0);
                 continue;
             }
             for (int i = 0; i < color_channels[data.color]; i++)
                 data.sbit[i] = curr_chain->chunk.data[i];
         } else if (curr_chain->chunk.tag == tag_cICP) {
             if (curr_chain->chunk.data_size != 4) {
-                fprintf(stderr, "%s: Warning: Illegal cICP size\n", argv[0]);
+                fprintf(stderr, "%s: Warning: Illegal cICP size\n", argv0);
                 continue;
             }
             if (tag_array_to_uint32(curr_chain->chunk.data) == 0x010d0001) {
@@ -738,7 +746,7 @@ int main(int argc, char *argv[]) {
         } else if (curr_chain->chunk.tag == tag_cHRM) {
             uint32_t values[8];
             if (curr_chain->chunk.data_size != 32) {
-                fprintf(stderr, "%s: Warning: Illegal cHRM size\n", argv[0]);
+                fprintf(stderr, "%s: Warning: Illegal cHRM size\n", argv0);
                 continue;
             }
             for (int i = 0; i < 8; i++)
@@ -748,8 +756,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!output)
-        goto flush;
+    if (!output) {
+        if (!options->fix)
+            goto flush;
+        output = input;
+    }
 
     fclose(in);
     in = NULL;
@@ -759,14 +770,14 @@ int main(int argc, char *argv[]) {
     else
         out = fopen(output, "w");
     if (!out) {
-        perror(argv[0]);
+        perror(argv0);
         ret = 1;
         goto flush;
     }
 
     count = fwrite(png_signature, 8, 1, out);
     if (!count) {
-        perror(argv[0]);
+        perror(argv0);
         ret = 2;
         goto flush;
     }
@@ -776,7 +787,7 @@ int main(int argc, char *argv[]) {
         (!data.have_iccp && !data.have_srgb && !data.have_gama &&
         (!data.have_chrm || data.chrm_is_srgb))));
     for (curr_chain = &png_file; curr_chain; curr_chain = curr_chain->next) {
-        char *error = argv[0];
+        const char *error = argv0;
         int skip = 0;
         uint8_t tag[5] = { 0 };
         for (int i = 0; i < sizeof(strip_chunks)/sizeof(strip_chunks[0]); i++) {
@@ -814,7 +825,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Writing chunk: IDAT\n");
                 ret = write_idats(out, &idat_chain, &error);
                 if (ret < 0) {
-                    fprintf(stderr, "%s: %s\n", argv[0], error);
+                    fprintf(stderr, "%s: %s\n", argv0, error);
                     goto flush;
                 }
             } while (idat_chain && idat_chain->chunk.tag == tag_IDAT);
@@ -829,7 +840,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Writing chunk: %s\n", tag);
             ret = write_chunk(out, &curr_chain->chunk, &error);
             if (ret < 0) {
-                fprintf(stderr, "%s: %s\n", argv[0], error);
+                fprintf(stderr, "%s: %s\n", argv0, error);
                 goto flush;
             }
         }
@@ -838,7 +849,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Inserting default sRGB chunk\n");
             ret = write_chunk(out, &default_srgb_chunk, &error);
             if (ret < 0) {
-                fprintf(stderr, "%s: %s\n", argv[0], error);
+                fprintf(stderr, "%s: %s\n", argv0, error);
                 goto flush;
             }
         }
@@ -850,5 +861,58 @@ flush:
     if (out)
         fclose(out);
     free_chain(&png_file);
+    return ret;
+}
+
+static int usage(int ret, const char *argv0) {   
+    fprintf(stderr, "Usage: %s [-v | --verbose] [--fix | --o=output | -o output] [--] <png...>\n", argv0);
+    return ret;
+}
+
+int main(int argc, const char *argv[]) {
+    int ret = 0;
+    int options_done = 0;
+    int awaiting = 0;
+    int input_count = 0;
+    UmbPngOptions options = { 0 };
+    const char *output = NULL;
+    const char **input = NULL;
+
+    if (argc < 2)
+        return usage(1, argv[0]);
+    for (int i = 1; i < argc; i++) {
+        if (*(argv[i]) != '-' && !awaiting)
+            options_done = 1;
+        if (options_done) {
+            input = argv + i;
+            input_count = argc - i;
+            break;
+        }
+        if (awaiting) {
+            output = argv[i];
+            awaiting = 0;
+        } else if (!strcmp("--", argv[i])) {
+            options_done = 1;
+        } else if (!strcmp("-v", argv[i]) || !strcmp("--verbose", argv[i])) {
+            options.verbose = 1;
+        } else if (!strcmp("--fix", argv[i])) {
+            options.fix = 1;
+        } else if (!strncmp("--o=", argv[i], 4)) {
+            output = argv[i] + 4;
+        } else if (!strcmp("-o", argv[i])) {
+            awaiting = 1;
+        } else if (!strcmp("--help", argv[i])) {
+            return usage(0, argv[0]);
+        } else {
+            fprintf(stderr, "%s: Unknown Option: %s\n", argv[0], argv[i]);
+            return usage(1, argv[0]);
+        }
+    }
+
+    if (!input)
+        return usage(1, argv[0]);
+    for (int i = 0; i < input_count; i++)
+        ret |= process_png(input[i], output, &options);
+
     return ret;
 }
