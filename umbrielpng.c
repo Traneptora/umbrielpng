@@ -708,7 +708,8 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 freep(profile.icc_data);
                 continue;
             }
-            fprintf(stderr, "ICC Profile Length: %llu\n", (long long unsigned)profile.size);
+            if (options->verbose)
+                fprintf(stderr, "ICC Profile Length: %llu\n", (long long unsigned)profile.size);
             ret = matches_srgb(&profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
@@ -734,8 +735,15 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "%s: Warning: Illegal sBIT chunk\n", argv0);
                 continue;
             }
-            for (int i = 0; i < color_channels[data.color]; i++)
+            if (options->verbose)
+                fprintf(stderr, "sBIT: %d", curr_chain->chunk.data[0]);
+            for (int i = 0; i < color_channels[data.color]; i++) {
                 data.sbit[i] = curr_chain->chunk.data[i];
+                if (options->verbose && i)
+                    fprintf(stderr, ", %d", data.sbit[i]);
+            }
+            if (options->verbose)
+                fprintf(stderr, "\n");
         } else if (curr_chain->chunk.tag == tag_cICP) {
             if (curr_chain->chunk.data_size != 4) {
                 fprintf(stderr, "%s: Warning: Illegal cICP size\n", argv0);
@@ -745,6 +753,10 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "cICP represents sRGB space\n");
                 data.cicp_is_srgb = 1;
             }
+            if (options->verbose) {
+                fprintf(stderr, "cICP: %d, %d, %d, %d\n", curr_chain->chunk.data[0], curr_chain->chunk.data[1],
+                    curr_chain->chunk.data[2], curr_chain->chunk.data[3]);
+            }
         } else if (curr_chain->chunk.tag == tag_cHRM) {
             uint32_t values[8];
             if (curr_chain->chunk.data_size != 32) {
@@ -753,8 +765,20 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             }
             for (int i = 0; i < 8; i++)
                 values[i] = rbe32(curr_chain->chunk.data + (4 * i));
-            if (!memcmp(values, default_chrm_data, sizeof(values)))
+            if (!memcmp(values, default_chrm_data, sizeof(values))) {
                 data.chrm_is_srgb = 1;
+                fprintf(stderr, "cHRM matches sRGB space\n");
+            } else if (options->verbose) {
+                fprintf(stderr, "cHRM: wp: %u, %u, r: %u, %u, g: %u, %u, b: %u, %u\n", values[0], values[1],
+                    values[2], values[3], values[4], values[5], values[6], values[7]);
+            }
+        } else if (curr_chain->chunk.tag == tag_gAMA) {
+            if (curr_chain->chunk.data_size != 4) {
+                fprintf(stderr, "%s: Warning: Illegal gAMA size\n", argv0);
+                continue;
+            }
+            if (options->verbose)
+                fprintf(stderr, "gAMA: %d\n", rbe32(curr_chain->chunk.data));
         }
     }
 
