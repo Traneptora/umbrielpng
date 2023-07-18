@@ -173,13 +173,15 @@ static const uint32_t strip_chunks[8] = {
     tag_tIME, tag_tEXt, tag_zTXt, tag_iTXt,
 };
 
-static inline uint32_t tag_array_to_uint32(const uint8_t *tag) {
+static inline uint32_t rbe32(const uint8_t *tag) {
    return maketag(tag[0],tag[1],tag[2],tag[3]);
 }
 
-static inline void uint32_to_tag_array(uint8_t *tag, uint32_t made) {
-    for (int i = 0; i < 4; i++)
-        tag[i] = (made >> (24 - (8 * i))) & 0xFF;
+static inline void wbe32(uint8_t *tag, uint32_t be32) {
+    tag[0] = (be32 >> 24) & 0xFF;
+    tag[1] = (be32 >> 16) & 0xFF;
+    tag[2] = (be32 >> 8) & 0xFF;
+    tag[3] = be32 & 0xFF;
 }
 
 static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, const char **error) {
@@ -189,12 +191,12 @@ static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, con
     read = fread(tag, 4, 1, in);
     if (!read)
         goto fail;
-    chunk->data_size = tag_array_to_uint32(tag);
+    chunk->data_size = rbe32(tag);
 
     read = fread(tag, 4, 1, in);
     if (!read)
         goto fail;
-    chunk->tag = tag_array_to_uint32(tag);
+    chunk->tag = rbe32(tag);
 
     if (fseek(in, chunk->data_size, SEEK_CUR) < 0)
         goto fail;
@@ -202,7 +204,7 @@ static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, con
     read = fread(tag, 4, 1, in);
     if (!read)
         goto fail;
-    chunk->crc32 = tag_array_to_uint32(tag);
+    chunk->crc32 = rbe32(tag);
 
     chunk->chunk_size = 12 + chunk->data_size;
     chunk->offset = last ? last->offset + last->chunk_size : 8;
@@ -226,7 +228,7 @@ static int read_chunk(FILE *in, UmbPngChunk *chunk, const char **error) {
     size_t total = 0;
     uint32_t crc;
 
-    uint32_to_tag_array(tag, chunk->tag);
+    wbe32(tag, chunk->tag);
     crc = crc32_z(0, tag, 4);
 
     if (chunk->data_size)
@@ -269,12 +271,12 @@ static int write_chunk(FILE *out, const UmbPngChunk *chunk, const char **error) 
     size_t count;
     size_t total = 0;
 
-    uint32_to_tag_array(tag, chunk->data_size);
+    wbe32(tag, chunk->data_size);
     count = fwrite(tag, 4, 1, out);
     if (!count)
         goto fail;
 
-    uint32_to_tag_array(tag, chunk->tag);
+    wbe32(tag, chunk->tag);
     count = fwrite(tag, 4, 1, out);
     if (!count)
         goto fail;
@@ -286,7 +288,7 @@ static int write_chunk(FILE *out, const UmbPngChunk *chunk, const char **error) 
         total += count;
     }
 
-    uint32_to_tag_array(tag, chunk->crc32);
+    wbe32(tag, chunk->crc32);
     count = fwrite(tag, 4, 1, out);
     if (!count)
         goto fail;
@@ -359,7 +361,7 @@ fail:
     return -1;
 }
 
-static int matches_srgb(UmbIccProfile *profile, const char **error) {
+static int matches_srgb(const UmbIccProfile *profile, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
     uint8_t tag[5] = { 0 };
@@ -371,81 +373,81 @@ static int matches_srgb(UmbIccProfile *profile, const char **error) {
     if (profile->size < 144)
         return 0;
 
-    if (tag_array_to_uint32(profile->icc_data) != profile->size) {
+    if (rbe32(profile->icc_data) != profile->size) {
         *error = "ICC profile size mismatch";
         return 0;
     }
 
-    tag_count = tag_array_to_uint32(profile->icc_data + 128);
+    tag_count = rbe32(profile->icc_data + 128);
     header = profile->icc_data + 132;
 
     for (uint32_t i = 0; i < tag_count; i++, header += 12) {
         uint32_t sig, offset, size;
         if (header + 12 > profile->icc_data + profile->size)
             return 0;
-        sig = tag_array_to_uint32(header);
-        offset = tag_array_to_uint32(header + 4);
-        size = tag_array_to_uint32(header + 8);
+        sig = rbe32(header);
+        offset = rbe32(header + 4);
+        size = rbe32(header + 8);
         if (offset + size > profile->size)
             return 0;
-        uint32_to_tag_array(tag, sig);
+        wbe32(tag, sig);
         if (sig == maketag('w','t','p','t')) {
             if (size != 20)
                 return 0;
-            sig = tag_array_to_uint32(profile->icc_data + offset);
+            sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            wp[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
-            wp[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
-            wp[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+            wp[0] = rbe32(profile->icc_data + offset + 8);
+            wp[1] = rbe32(profile->icc_data + offset + 12);
+            wp[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('r','X','Y','Z')) {
             if (size != 20)
                 return 0;
-            sig = tag_array_to_uint32(profile->icc_data + offset);
+            sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            red[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
-            red[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
-            red[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+            red[0] = rbe32(profile->icc_data + offset + 8);
+            red[1] = rbe32(profile->icc_data + offset + 12);
+            red[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('g','X','Y','Z')) {
             if (size != 20)
                 return 0;
-            sig = tag_array_to_uint32(profile->icc_data + offset);
+            sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            green[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
-            green[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
-            green[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+            green[0] = rbe32(profile->icc_data + offset + 8);
+            green[1] = rbe32(profile->icc_data + offset + 12);
+            green[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('b','X','Y','Z')) {
             if (size != 20)
                 return 0;
-            sig = tag_array_to_uint32(profile->icc_data + offset);
+            sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            blue[0] = tag_array_to_uint32(profile->icc_data + offset + 8);
-            blue[1] = tag_array_to_uint32(profile->icc_data + offset + 12);
-            blue[2] = tag_array_to_uint32(profile->icc_data + offset + 16);
+            blue[0] = rbe32(profile->icc_data + offset + 8);
+            blue[1] = rbe32(profile->icc_data + offset + 12);
+            blue[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('r','T','R','C') || sig == maketag('g','T','R','C') ||
                    sig == maketag('b','T','R','C')) {
             int32_t g, a, b, c, d, e = 0, f = 0;
             if (size < 12)
                 return 0;
-            sig = tag_array_to_uint32(profile->icc_data + offset);
+            sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('p','a','r','a'))
                 return 0;
-            sig = tag_array_to_uint32(profile->icc_data + offset + 8);
+            sig = rbe32(profile->icc_data + offset + 8);
             if (sig != 0x30000 && sig != 0x40000)
                 return 0;
             if (size != 8 + (sig >> 13))
                 return 0;
-            g = tag_array_to_uint32(profile->icc_data + offset + 12);
-            a = tag_array_to_uint32(profile->icc_data + offset + 16);
-            b = tag_array_to_uint32(profile->icc_data + offset + 20);
-            c = tag_array_to_uint32(profile->icc_data + offset + 24);
-            d = tag_array_to_uint32(profile->icc_data + offset + 28);
+            g = rbe32(profile->icc_data + offset + 12);
+            a = rbe32(profile->icc_data + offset + 16);
+            b = rbe32(profile->icc_data + offset + 20);
+            c = rbe32(profile->icc_data + offset + 24);
+            d = rbe32(profile->icc_data + offset + 28);
             if (sig == 0x40000) {
-                e = tag_array_to_uint32(profile->icc_data + offset + 32);
-                f = tag_array_to_uint32(profile->icc_data + offset + 36);
+                e = rbe32(profile->icc_data + offset + 32);
+                f = rbe32(profile->icc_data + offset + 36);
             }
             if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
                 !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
@@ -472,8 +474,8 @@ static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, const char 
         return -1;
     }
 
-    data->width = tag_array_to_uint32(ihdr->data);
-    data->height = tag_array_to_uint32(ihdr->data + 4);
+    data->width = rbe32(ihdr->data);
+    data->height = rbe32(ihdr->data + 4);
     data->depth = ihdr->data[8];
     data->color = ihdr->data[9];
     if (ihdr->data[10]) {
@@ -530,7 +532,7 @@ static int write_idats(FILE *out, const UmbPngChunkChain **initial, const char *
         final = chain;
     }
 
-    uint32_to_tag_array(tag, total_size);
+    wbe32(tag, total_size);
     count = fwrite(tag, 4, 1, out);
     if (!count)
         goto fail;
@@ -549,7 +551,7 @@ static int write_idats(FILE *out, const UmbPngChunkChain **initial, const char *
         }
     }
 
-    uint32_to_tag_array(tag, crc);
+    wbe32(tag, crc);
     count = fwrite(tag, 4, 1, out);
     if (!count)
         goto fail;
@@ -683,7 +685,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         if (curr_chain->chunk.tag != tag_IDAT || !idat_count) {
             if (idat_count > 1)
                 fprintf(stderr, "Chunk: %llu more IDAT chunks\n", (long long unsigned)idat_count-1);
-            uint32_to_tag_array(tag, curr_chain->chunk.tag);
+            wbe32(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
                 tag, curr_chain->chunk.chunk_size, (long long unsigned)curr_chain->chunk.offset,
                 curr_chain->chunk.crc32);
@@ -739,7 +741,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "%s: Warning: Illegal cICP size\n", argv0);
                 continue;
             }
-            if (tag_array_to_uint32(curr_chain->chunk.data) == 0x010d0001) {
+            if (rbe32(curr_chain->chunk.data) == 0x010d0001) {
                 fprintf(stderr, "cICP represents sRGB space\n");
                 data.cicp_is_srgb = 1;
             }
@@ -750,7 +752,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 continue;
             }
             for (int i = 0; i < 8; i++)
-                values[i] = tag_array_to_uint32(curr_chain->chunk.data + (4 * i));
+                values[i] = rbe32(curr_chain->chunk.data + (4 * i));
             if (!memcmp(values, default_chrm_data, sizeof(values)))
                 data.chrm_is_srgb = 1;
         }
@@ -832,11 +834,11 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             initial_idat = NULL;
         }
         if (skip) {
-            uint32_to_tag_array(tag, curr_chain->chunk.tag);
+            wbe32(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Stripping chunk: %s\n", tag);
             continue;
         } else if (curr_chain->chunk.tag != tag_IDAT) {
-            uint32_to_tag_array(tag, curr_chain->chunk.tag);
+            wbe32(tag, curr_chain->chunk.tag);
             fprintf(stderr, "Writing chunk: %s\n", tag);
             ret = write_chunk(out, &curr_chain->chunk, &error);
             if (ret < 0) {
@@ -881,7 +883,7 @@ int main(int argc, const char *argv[]) {
     if (argc < 2)
         return usage(1, argv[0]);
     for (int i = 1; i < argc; i++) {
-        if (*(argv[i]) != '-' && !awaiting)
+        if (argv[i][0] != '-' && !awaiting)
             options_done = 1;
         if (options_done) {
             input = argv + i;
