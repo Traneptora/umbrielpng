@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <zlib.h>
 
@@ -104,6 +105,45 @@ enum UmbPngColorType {
     COLOR_RGBA = 6,
 };
 
+enum UmbPngColorPrim {
+    PRIM_RESERVED0,
+    PRIM_BT709,
+    PRIM_UNSPECIFIED,
+    PRIM_RESERVED3,
+    PRIM_BT470M,
+    PRIM_BT470BG,
+    PRIM_BT601,
+    PRIM_SMPTE_ST_240,
+    PRIM_FILM_C,
+    PRIM_BT2020,
+    PRIM_SMPTE_ST_428_1,
+    PRIM_SMPTE_RP_431_2,
+    PRIM_SMPTE_EG_432_1,
+    PRIM_H273_22 = 22,
+};
+
+enum UmbPngColorTrc {
+    TRC_RESERVED0,
+    TRC_BT709,
+    TRC_UNSPECIFIED,
+    TRC_RESERVED3,
+    TRC_GAMMA22,
+    TRC_GAMMA28,
+    TRC_BT601,
+    TRC_SMPTE_ST_240,
+    TRC_LINEAR,
+    TRC_LOGARITHMIC_100,
+    TRC_LOGARITHMIC_100_ROOT10,
+    TRC_IEC61966_2_4,
+    TRC_BT1361,
+    TRC_SRGB,
+    TRC_BT2020_10,
+    TRC_BT2020_12,
+    TRC_SMPTE_ST_2084_PQ,
+    TRC_SMPTE_ST_428_1,
+    TRC_ARIB_STD_B67_HLG,
+};
+
 typedef struct UmbPngScanData {
     int have_cicp;
     int have_iccp;
@@ -134,16 +174,18 @@ typedef struct UmbPngOptions {
     const char *argv0;
     const char *input;
     const char *output;
+    int force_cicp;
+    int forced_prim;
+    int forced_trc;
 } UmbPngOptions;
 
-
-static const char *color_names[7] = {
+static const char *const color_names[7] = {
     "Grayscale",
-    NULL,
+    "",
     "RGB",
     "Indexed",
     "Grayscale + Alpha",
-    NULL,
+    "",
     "RGB + Alpha",
 };
 
@@ -153,6 +195,49 @@ static const int color_channels[7] = {
 
 static const uint8_t png_signature[8] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+};
+
+static const char *const prim_names[24] = {
+    [PRIM_RESERVED0] = "Reserved0",
+    [PRIM_BT709] = "BT.709",
+    [PRIM_UNSPECIFIED] = "Unspecified",
+    [PRIM_RESERVED3] = "Reserved3",
+    [PRIM_BT470M] = "BT470M",
+    [PRIM_BT470BG] = "BT470BG",
+    [PRIM_BT601] = "BT.601",
+    [PRIM_SMPTE_ST_240] = "SMPTE ST 240",
+    [PRIM_FILM_C] = "Film Illuminant C",
+    [PRIM_BT2020] = "BT.2020",
+    [PRIM_SMPTE_ST_428_1] = "SMPTE ST 428",
+    [PRIM_SMPTE_RP_431_2] = "SMPTE RP 431-2",
+    [PRIM_SMPTE_EG_432_1] = "SMPTE EG 432-1",
+    [13] = "", [14] = "", [15] = "", [16] = "", [17] = "",
+    [18] = "", [19] = "", [20] = "", [21] = "",
+    [PRIM_H273_22] = "H.273 22",
+    [23] = NULL,
+};
+
+static const char *const trc_names[20] = {
+    [TRC_RESERVED0] = "Reserved0",
+    [TRC_BT709] = "BT.709",
+    [TRC_UNSPECIFIED] = "Unspecified",
+    [TRC_RESERVED3] = "Reserved3",
+    [TRC_GAMMA22] = "Gamma 2.2",
+    [TRC_GAMMA28] = "Gamma 2.8",
+    [TRC_BT601] = "BT.601",
+    [TRC_SMPTE_ST_240] = "SMPTE ST 240",
+    [TRC_LINEAR] = "Linear",
+    [TRC_LOGARITHMIC_100] = "Logarithmic 100:1",
+    [TRC_LOGARITHMIC_100_ROOT10] = "Logarithmic 100sqrt(10) : 1",
+    [TRC_IEC61966_2_4] = "IEC61966-2-4",
+    [TRC_BT1361] = "BT.1361",
+    [TRC_SRGB] = "sRGB",
+    [TRC_BT2020_10] = "BT.2020 10-bit",
+    [TRC_BT2020_12] = "BT.2020 12-bit",
+    [TRC_SMPTE_ST_2084_PQ] = "PQ",
+    [TRC_SMPTE_ST_428_1] = "SMPTE ST 428-1",
+    [TRC_ARIB_STD_B67_HLG] = "HLG",
+    [19] = NULL,
 };
 
 static const UmbPngChunk default_srgb_chunk = {
@@ -182,6 +267,14 @@ static inline void wbe32(uint8_t *tag, uint32_t be32) {
     tag[1] = (be32 >> 16) & 0xFF;
     tag[2] = (be32 >> 8) & 0xFF;
     tag[3] = be32 & 0xFF;
+}
+
+static int lookup_array(const char *const *array, const char *lookup) {
+    for (int i = 0; array[i]; i++) {
+        if (!strcasecmp(array[i], lookup))
+            return i;
+    }
+    return -1;
 }
 
 static int scan_chunk(FILE *in, UmbPngChunk *chunk, const UmbPngChunk *last, const char **error) {
@@ -754,8 +847,18 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 data.cicp_is_srgb = 1;
             }
             if (options->verbose) {
-                fprintf(stderr, "cICP: %d, %d, %d, %d\n", curr_chain->chunk.data[0], curr_chain->chunk.data[1],
-                    curr_chain->chunk.data[2], curr_chain->chunk.data[3]);
+                const char *names[4];
+                names[0] = curr_chain->chunk.data[0] < sizeof(prim_names)/sizeof(*prim_names)
+                    ? prim_names[curr_chain->chunk.data[0]] : NULL;
+                names[1] = curr_chain->chunk.data[1] < sizeof(trc_names)/sizeof(*trc_names)
+                    ? trc_names[curr_chain->chunk.data[1]] : NULL;
+                names[2] = curr_chain->chunk.data[2] == 0 ? "RGB" : NULL;
+                names[3] = curr_chain->chunk.data[3] == 1 ? "Full" : curr_chain->chunk.data[3] == 0 ? "Limited" : NULL;
+                for (int i = 0; i < 4; i++) {
+                    if (!names[i])
+                        names[i] = "INVALID";
+                }
+                fprintf(stderr, "cICP: %s, %s, %s, %s\n", names[0], names[1], names[2], names[3]);
             }
         } else if (curr_chain->chunk.tag == tag_cHRM) {
             uint32_t values[8];
@@ -808,6 +911,12 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         goto flush;
     }
 
+    if (options->force_cicp) {
+        data.have_cicp = 1;
+        if (options->forced_prim == PRIM_BT709 && options->forced_trc == TRC_SRGB)
+            data.cicp_is_srgb = 1;
+    }
+
     curr_chain = &png_file;
     default_srgb = data.cicp_is_srgb || (!data.have_cicp && (data.icc_is_srgb ||
         (!data.have_iccp && !data.have_srgb && !data.have_gama &&
@@ -831,7 +940,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             skip = 1;
         if (curr_chain->chunk.tag == tag_iCCP && (default_srgb || data.have_cicp))
             skip = 1;
-        if (curr_chain->chunk.tag == tag_cICP && default_srgb)
+        if (curr_chain->chunk.tag == tag_cICP && (default_srgb || options->force_cicp))
             skip = 1;
         if (curr_chain->chunk.tag == tag_sBIT) {
             skip = 1;
@@ -878,6 +987,28 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "%s: %s\n", argv0, error);
                 goto flush;
             }
+        } else if (curr_chain->chunk.tag == tag_IHDR && options->force_cicp) {
+            uint8_t cicp_data[4] = {
+                options->forced_prim,
+                options->forced_trc,
+                0,
+                1,
+            };
+            uint32_t crc = crc32_z(0xc7a37c8c, cicp_data, 4);
+            const UmbPngChunk forced_cicp = {
+                .tag = tag_cICP,
+                .offset = 12,
+                .data_size = 4,
+                .chunk_size = 16,
+                .data = cicp_data,
+                .crc32 = crc,
+            };
+            fprintf(stderr, "Inserting forced cICP chunk\n");
+            ret = write_chunk(out, &forced_cicp, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: %s\n", argv0, error);
+                goto flush;
+            }
         }
     }
 
@@ -903,6 +1034,8 @@ int main(int argc, const char *argv[]) {
     UmbPngOptions options = { 0 };
     const char *output = NULL;
     const char **input = NULL;
+    options.forced_prim = -1;
+    options.forced_trc = -1;
 
     if (argc < 2)
         return usage(1, argv[0]);
@@ -923,6 +1056,14 @@ int main(int argc, const char *argv[]) {
             options.verbose = 1;
         } else if (!strcmp("--fix", argv[i])) {
             options.fix = 1;
+        } else if (!strncmp("--cicp-prim=", argv[i], 12)) {
+            options.forced_prim = lookup_array(prim_names, argv[i] + 12);
+            if (options.forced_prim < 0)
+                fprintf(stderr, "%s: Illegal cICP Primaries: %s\n", argv[0], argv[i] + 12);
+        } else if (!strncmp("--cicp-trc=", argv[i], 11)) {
+            options.forced_trc = lookup_array(trc_names, argv[i] + 11);
+            if (options.forced_trc < 0)
+                fprintf(stderr, "%s: Illegal cICP Transfer Characteristics: %s\n", argv[0], argv[i] + 11);
         } else if (!strncmp("--o=", argv[i], 4)) {
             output = argv[i] + 4;
         } else if (!strcmp("-o", argv[i])) {
@@ -934,6 +1075,9 @@ int main(int argc, const char *argv[]) {
             return usage(1, argv[0]);
         }
     }
+
+    if (options.forced_prim >= 0 && options.forced_trc >= 0)
+        options.force_cicp = 1;
 
     if (!input)
         return usage(1, argv[0]);
