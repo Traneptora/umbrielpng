@@ -401,6 +401,7 @@ static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, const c
     size_t name_len;
     size_t total_size = 0;
     size_t icc_buffer_size = 4096;
+    void *temp;
 
     if (iccp->data_size < 4)
         goto fail;
@@ -417,9 +418,10 @@ static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, const c
     if (*(iccp->data + name_len + 1))
         goto fail;
 
-    profile->icc_data = realloc(profile->icc_data, icc_buffer_size);
-    if (!profile->icc_data)
+    temp = realloc(profile->icc_data, icc_buffer_size);
+    if (!temp)
         goto fail;
+    profile->icc_data = temp;
 
     strm.next_in = iccp->data + name_len + 2;
     strm.avail_in = iccp->data_size - name_len - 2;
@@ -428,9 +430,10 @@ static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, const c
         size_t have;
         if (icc_buffer_size <= total_size) {
             icc_buffer_size *= 2;
-            profile->icc_data = realloc(profile->icc_data, icc_buffer_size);
-            if (!profile->icc_data)
+            temp = realloc(profile->icc_data, icc_buffer_size);
+            if (!temp)
                 goto fail;
+            profile->icc_data = temp;
         }
         strm.next_out = profile->icc_data + total_size;
         strm.avail_out = icc_buffer_size - total_size;
