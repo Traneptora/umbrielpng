@@ -1045,6 +1045,7 @@ int main(int argc, const char *argv[]) {
     const char **input = NULL;
     options.forced_prim = -1;
     options.forced_trc = -1;
+    options.argv0 = argv[0];
 
     if (argc < 2)
         return usage(1, argv[0]);
