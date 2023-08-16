@@ -1022,7 +1022,13 @@ flush:
 }
 
 static int usage(int ret, const char *argv0) {   
-    fprintf(stderr, "Usage: %s [-v | --verbose] [--fix | --o=output | -o output] [--] <png...>\n", argv0);
+    fprintf(stderr, "Usage: %s [-v | --verbose] [options] [--] <png...>\n", argv0);
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "    --fix | -o <output> | --o=<output>\n");
+    fprintf(stderr, "        Fix the PNG file. --fix works in place, the others use the provided output.\n");
+    fprintf(stderr, "    --cicp-prim=<primaries>\n");
+    fprintf(stderr, "    --cicp-trc=<transfer>\n");
+    fprintf(stderr, "        Tag the output file with a cICP chunk with the provided primaries and transfer.\n");
     return ret;
 }
 
