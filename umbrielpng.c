@@ -698,7 +698,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
     if (!strcmp("-", input))
         in = stdin;
     else
-        in = fopen(input, "r");
+        in = fopen(input, "rb");
     if (!in) {
         perror(argv0);
         ret = 1;
@@ -900,7 +900,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
     if (!strcmp("-", output))
         out = stdout;
     else
-        out = fopen(output, "w");
+        out = fopen(output, "wb");
     if (!out) {
         perror(argv0);
         ret = 1;
