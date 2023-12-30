@@ -34,7 +34,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <error.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
