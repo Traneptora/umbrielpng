@@ -937,7 +937,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         if (curr_chain->chunk.tag == tag_hIST && !data.have_plte)
             skip = 1;
         if ((curr_chain->chunk.tag == tag_cHRM || curr_chain->chunk.tag == tag_gAMA)
-                && (data.have_cicp || data.have_iccp || data.have_srgb))
+                && (data.have_cicp || data.have_iccp || data.have_srgb || default_srgb))
             skip = 1;
         if (curr_chain->chunk.tag == tag_sRGB && (default_srgb || data.have_iccp || data.have_cicp))
             skip = 1;
