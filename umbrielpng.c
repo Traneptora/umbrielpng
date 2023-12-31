@@ -465,12 +465,14 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
     int32_t green[3] = { 0 };
     int32_t blue[3] = { 0 };
 
-    if (profile->size < 144)
-        return 0;
+    if (profile->size < 144) {
+        *error = "ICC profile too short";
+        return -1;
+    }
 
     if (rbe32(profile->icc_data) != profile->size) {
         *error = "ICC profile size mismatch";
-        return 0;
+        return -1;
     }
 
     tag_count = rbe32(profile->icc_data + 128);
@@ -478,17 +480,22 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
 
     for (uint32_t i = 0; i < tag_count; i++, header += 12) {
         uint32_t sig, offset, size;
-        if (header + 12 > profile->icc_data + profile->size)
-            return 0;
+        if (header + 12 > profile->icc_data + profile->size) {
+            *error = "ICC profile tag out of bounds";
+            return -1;
+        }
         sig = rbe32(header);
         offset = rbe32(header + 4);
         size = rbe32(header + 8);
-        if (offset + size > profile->size)
-            return 0;
-        wbe32(tag, sig);
+        if (offset + size > profile->size) {
+            *error = "ICC profile tag offset out of bounds";
+            return -1;
+        }
         if (sig == maketag('w','t','p','t')) {
-            if (size != 20)
-                return 0;
+            if (size != 20) {
+                *error = "Illegal `wtpt` tag size";
+                return -1;
+            }
             sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
@@ -496,8 +503,10 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
             wp[1] = rbe32(profile->icc_data + offset + 12);
             wp[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('r','X','Y','Z')) {
-            if (size != 20)
-                return 0;
+            if (size != 20) {
+                *error = "Illegal `rXYZ` tag size";
+                return -1;
+            }
             sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
@@ -505,8 +514,10 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
             red[1] = rbe32(profile->icc_data + offset + 12);
             red[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('g','X','Y','Z')) {
-            if (size != 20)
-                return 0;
+            if (size != 20) {
+                *error = "Illegal `gXYZ` tag size";
+                return -1;
+            }
             sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
@@ -514,8 +525,10 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
             green[1] = rbe32(profile->icc_data + offset + 12);
             green[2] = rbe32(profile->icc_data + offset + 16);
         } else if (sig == maketag('b','X','Y','Z')) {
-            if (size != 20)
-                return 0;
+            if (size != 20) {
+                *error = "Illegal `bXYZ` tag size";
+                return -1;
+            }
             sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
@@ -525,8 +538,10 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
         } else if (sig == maketag('r','T','R','C') || sig == maketag('g','T','R','C') ||
                    sig == maketag('b','T','R','C')) {
             int32_t g, a, b, c, d, e = 0, f = 0;
-            if (size < 12)
-                return 0;
+            if (size < 12) {
+                *error = "Illegal `?TRC` tag size";
+                return -1;
+            }
             sig = rbe32(profile->icc_data + offset);
             if (sig != maketag('p','a','r','a'))
                 return 0;
@@ -808,16 +823,12 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             ret = matches_srgb(&profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
-                freep(profile.icc_data);
-                continue;
-            }
-            if (ret) {
+            } else if (ret > 0) {
                 fprintf(stderr, "ICC profile matches sRGB profile\n");
                 data.icc_is_srgb = 1;
             }
             freep(profile.icc_data);
-        }
-        if (curr_chain->chunk.tag == tag_IHDR) {
+        } else if (curr_chain->chunk.tag == tag_IHDR) {
             ret = parse_ihdr(&curr_chain->chunk, &data, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
