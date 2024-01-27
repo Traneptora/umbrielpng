@@ -81,6 +81,8 @@
 #define tag_zTXt maketag('z','T','X','t')
 #define tag_iTXt maketag('i','T','X','t')
 
+#define array_size(a) (sizeof((a))/sizeof(*(a)))
+
 typedef struct UmbPngChunk {
     uint32_t chunk_size;
     uint32_t tag;
@@ -196,47 +198,48 @@ static const uint8_t png_signature[8] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 };
 
-static const char *const prim_names[24] = {
-    [PRIM_RESERVED0] = "Reserved0",
-    [PRIM_BT709] = "BT.709",
-    [PRIM_UNSPECIFIED] = "Unspecified",
-    [PRIM_RESERVED3] = "Reserved3",
-    [PRIM_BT470M] = "BT470M",
-    [PRIM_BT470BG] = "BT470BG",
-    [PRIM_BT601] = "BT.601",
-    [PRIM_SMPTE_ST_240] = "SMPTE ST 240",
-    [PRIM_FILM_C] = "Film Illuminant C",
-    [PRIM_BT2020] = "BT.2020",
-    [PRIM_SMPTE_ST_428_1] = "SMPTE ST 428",
-    [PRIM_SMPTE_RP_431_2] = "SMPTE RP 431-2",
-    [PRIM_SMPTE_EG_432_1] = "SMPTE EG 432-1",
-    [13] = "", [14] = "", [15] = "", [16] = "", [17] = "",
-    [18] = "", [19] = "", [20] = "", [21] = "",
-    [PRIM_H273_22] = "H.273 22",
-    [23] = NULL,
+typedef struct LookupTableEntry {
+    int index;
+    char *names[8];
+} LookupTableEntry;
+
+static const LookupTableEntry prim_names[] = {
+    {PRIM_RESERVED0, {"0", "Reserved0", NULL}},
+    {PRIM_BT709, {"1", "BT.709", "BT709", "709", NULL}},
+    {PRIM_UNSPECIFIED, {"2", "Unspecified", "Unknown", NULL}},
+    {PRIM_RESERVED3, {"3", "Reserved", "Reserved3", NULL}},
+    {PRIM_BT470M, {"4", "BT.470M", "BT470M", NULL}},
+    {PRIM_BT470BG, {"5", "BT.470BG", "BT470BG", NULL}},
+    {PRIM_BT601, {"6", "BT.601", "BT601", "601", NULL}},
+    {PRIM_SMPTE_ST_240, {"7", "SMPTEST240", "ST240", NULL}},
+    {PRIM_FILM_C, {"8", "FilmIlluminantC", "C", NULL}},
+    {PRIM_BT2020, {"9", "BT.2020", "BT2020", "BT.2100", "BT2100", "2020", "2100", NULL}},
+    {PRIM_SMPTE_ST_428_1, {"10", "SMPTE428", "CIEXYZ", "XYZ", NULL}},
+    {PRIM_SMPTE_RP_431_2, {"11", "DCIP3", "SMPTE431-2", NULL}},
+    {PRIM_SMPTE_EG_432_1, {"12", "DisplayP3", "P3", "SMPTE432-1", "P3D65", NULL}},
+    {PRIM_H273_22, {"22", "Ebu3213-E", NULL}},
 };
 
-static const char *const trc_names[20] = {
-    [TRC_RESERVED0] = "Reserved0",
-    [TRC_BT709] = "BT.709",
-    [TRC_UNSPECIFIED] = "Unspecified",
-    [TRC_RESERVED3] = "Reserved3",
-    [TRC_GAMMA22] = "Gamma 2.2",
-    [TRC_GAMMA28] = "Gamma 2.8",
-    [TRC_BT601] = "BT.601",
-    [TRC_SMPTE_ST_240] = "SMPTE ST 240",
-    [TRC_LINEAR] = "Linear",
-    [TRC_LOGARITHMIC_100] = "Logarithmic 100:1",
-    [TRC_LOGARITHMIC_100_ROOT10] = "Logarithmic 100sqrt(10) : 1",
-    [TRC_IEC61966_2_4] = "IEC61966-2-4",
-    [TRC_BT1361] = "BT.1361",
-    [TRC_SRGB] = "sRGB",
-    [TRC_BT2020_10] = "BT.2020 10-bit",
-    [TRC_BT2020_12] = "BT.2020 12-bit",
-    [TRC_SMPTE_ST_2084_PQ] = "PQ",
-    [TRC_SMPTE_ST_428_1] = "SMPTE ST 428-1",
-    [TRC_ARIB_STD_B67_HLG] = "HLG",
-    [19] = NULL,
+static const LookupTableEntry trc_names[]  = {
+    {TRC_RESERVED0, {"0", "Reserved0", NULL}},
+    {TRC_BT709, {"1", "BT.709", "BT709", "709", NULL}},
+    {TRC_UNSPECIFIED, {"2", "Unspecified", "Unknown", NULL}},
+    {TRC_RESERVED3, {"3", "Reserved", "Reserved3", NULL}},
+    {TRC_GAMMA22, {"4", "Gamma2.2", "Gamma22", "Gamma45", "Gamma45455", NULL}},
+    {TRC_GAMMA28, {"5", "Gamma2.8", "Gamma28", "Gamma36", "Gamma35", "Gamma35714", NULL}},
+    {TRC_BT601, {"6", "BT.601", "BT601", "601", NULL}},
+    {TRC_SMPTE_ST_240, {"7", "SMPTE240", NULL}},
+    {TRC_LINEAR, {"8", "Linear", "LinearLight", NULL}},
+    {TRC_LOGARITHMIC_100, {"9", "Logarithmic", "LogarithmicLight", "LogarithmicLight100", NULL}},
+    {TRC_LOGARITHMIC_100_ROOT10, {"10", "LogarithmicRoot10", NULL}},
+    {TRC_IEC61966_2_4, {"11", "IEC61966-2-4", "61966-2-4", NULL}},
+    {TRC_BT1361, {"12", "BT.1361", "BT1361", "1361", NULL}},
+    {TRC_SRGB, {"13", "sRGB", "IEC61966-2-1", "61966-2-1", NULL}},
+    {TRC_BT2020_10, {"14", "BT.2020_10", "BT2020_10", "2020_10", NULL}},
+    {TRC_BT2020_10, {"15", "BT.2020_12", "BT2020_12", "2020_12", NULL}},
+    {TRC_SMPTE_ST_2084_PQ, {"16", "PQ", "SMPTE2084", NULL}},
+    {TRC_SMPTE_ST_428_1, {"17", "DCI", "SMPTE428-1", "Gamma26", "Gamma2.6", "Gamma38", "Gamma38462", NULL}},
+    {TRC_ARIB_STD_B67_HLG, {"18", "HLG", "B67", "HybridLogGamma", NULL}},
 };
 
 static const UmbPngChunk default_srgb_chunk = {
@@ -268,10 +271,12 @@ static inline void wbe32(uint8_t *tag, uint32_t be32) {
     tag[3] = be32 & 0xFF;
 }
 
-static int lookup_array(const char *const *array, const char *lookup) {
-    for (int i = 0; array[i]; i++) {
-        if (!strcasecmp(array[i], lookup))
-            return i;
+static int lookup_array(const LookupTableEntry *array, size_t len, const char *lookup) {
+    for (size_t i = 0; i < len; i++) {
+        for (size_t j = 0; array[i].names[j]; j++) {
+            if (!strcasecmp(array[i].names[j], lookup))
+                return array[i].index;
+        }
     }
     return -1;
 }
@@ -860,11 +865,21 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 data.cicp_is_srgb = 1;
             }
             if (options->verbose) {
-                const char *names[4];
-                names[0] = curr_chain->chunk.data[0] < sizeof(prim_names)/sizeof(*prim_names)
-                    ? prim_names[curr_chain->chunk.data[0]] : NULL;
-                names[1] = curr_chain->chunk.data[1] < sizeof(trc_names)/sizeof(*trc_names)
-                    ? trc_names[curr_chain->chunk.data[1]] : NULL;
+                const char *names[4] = { 0 };
+                uint8_t prim = curr_chain->chunk.data[0];
+                uint8_t trc = curr_chain->chunk.data[1];
+                for (int i = 0; i < array_size(prim_names); i++) {
+                    if (prim_names[i].index == prim) {
+                        names[0] = prim_names[i].names[2];
+                        break;
+                    }
+                }
+                for (int i = 0; i < array_size(trc_names); i++) {
+                    if (trc_names[i].index == trc) {
+                        names[1] = trc_names[i].names[2];
+                        break;
+                    }
+                }
                 names[2] = curr_chain->chunk.data[2] == 0 ? "RGB" : NULL;
                 names[3] = curr_chain->chunk.data[3] == 1 ? "Full" : curr_chain->chunk.data[3] == 0 ? "Limited" : NULL;
                 for (int i = 0; i < 4; i++) {
@@ -1077,11 +1092,11 @@ int main(int argc, const char *argv[]) {
         } else if (!strcmp("--fix", argv[i])) {
             options.fix = 1;
         } else if (!strncmp("--cicp-prim=", argv[i], 12)) {
-            options.forced_prim = lookup_array(prim_names, argv[i] + 12);
+            options.forced_prim = lookup_array(prim_names, array_size(prim_names), argv[i] + 12);
             if (options.forced_prim < 0)
                 fprintf(stderr, "%s: Illegal cICP Primaries: %s\n", argv[0], argv[i] + 12);
         } else if (!strncmp("--cicp-trc=", argv[i], 11)) {
-            options.forced_trc = lookup_array(trc_names, argv[i] + 11);
+            options.forced_trc = lookup_array(trc_names, array_size(trc_names), argv[i] + 11);
             if (options.forced_trc < 0)
                 fprintf(stderr, "%s: Illegal cICP Transfer Characteristics: %s\n", argv[0], argv[i] + 11);
         } else if (!strncmp("--o=", argv[i], 4)) {
