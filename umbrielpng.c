@@ -1052,8 +1052,8 @@ flush:
 static int usage(int ret, const char *argv0) {   
     fprintf(stderr, "Usage: %s [-v | --verbose] [options] [--] <png...>\n", argv0);
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "    --fix | -o <output> | --o=<output>\n");
-    fprintf(stderr, "        Fix the PNG file. --fix works in place, the others use the provided output.\n");
+    fprintf(stderr, "    --fix-in-place | -o <output> | --o=<output>\n");
+    fprintf(stderr, "        Fix the PNG file. --fix-in-place works in place, otherwise use the provided output.\n");
     fprintf(stderr, "    --cicp-prim=<primaries>\n");
     fprintf(stderr, "    --cicp-trc=<transfer>\n");
     fprintf(stderr, "        Tag the output file with a cICP chunk with the provided primaries and transfer.\n");
@@ -1089,7 +1089,7 @@ int main(int argc, const char *argv[]) {
             options_done = 1;
         } else if (!strcmp("-v", argv[i]) || !strcmp("--verbose", argv[i])) {
             options.verbose = 1;
-        } else if (!strcmp("--fix", argv[i])) {
+        } else if (!strcmp("--fix-in-place", argv[i])) {
             options.fix = 1;
         } else if (!strncmp("--cicp-prim=", argv[i], 12)) {
             options.forced_prim = lookup_array(prim_names, array_size(prim_names), argv[i] + 12);
