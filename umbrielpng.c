@@ -1057,6 +1057,8 @@ static int usage(int ret, const char *argv0) {
     fprintf(stderr, "    --cicp-prim=<primaries>\n");
     fprintf(stderr, "    --cicp-trc=<transfer>\n");
     fprintf(stderr, "        Tag the output file with a cICP chunk with the provided primaries and transfer.\n");
+    fprintf(stderr, "    --srgb\n");
+    fprintf(stderr, "        Equivalent to --cicp-prim=bt709 --cicp-trc=srgb\n");
     return ret;
 }
 
@@ -1091,6 +1093,9 @@ int main(int argc, const char *argv[]) {
             options.verbose = 1;
         } else if (!strcmp("--fix-in-place", argv[i])) {
             options.fix = 1;
+        } else if (!strcmp("--srgb", argv[i])) {
+            options.forced_prim = PRIM_BT709;
+            options.forced_trc = TRC_SRGB;
         } else if (!strncmp("--cicp-prim=", argv[i], 12)) {
             options.forced_prim = lookup_array(prim_names, array_size(prim_names), argv[i] + 12);
             if (options.forced_prim < 0)
