@@ -438,6 +438,7 @@ static int inflate_zlib_buffer(const UmbBuffer *zbuf, UmbBuffer *outbuf, const c
 
     outbuf->size = total_read;
     return 0;
+
 fail:
     inflateEnd(&strm);
     freep(outbuf->data);
@@ -445,25 +446,39 @@ fail:
     return -1;
 }
 
+static int get_initial_text_len(size_t *init_len, const UmbPngChunk *chunk, size_t max_len, const char **error) {
+    size_t max = chunk->data_size;
+    size_t text_len;
+
+    if (max > max_len)
+        max = max_len;
+
+    text_len = strnlen((const char *) chunk->data, max);
+
+    if (chunk->data[text_len]) {
+        *error = "Not null terminated initial text";
+        return -1;
+    }
+
+    *init_len = text_len + 1;
+
+    return 0;
+}
+
 static int inflate_iccp(const UmbPngChunk *iccp, UmbBuffer *profile, const char **error) {
     int ret;
-    size_t max_len = iccp->data_size - 2;
     size_t name_len;
     UmbBuffer zbuf;
 
     if (iccp->data_size < 4)
         goto fail;
 
-    if (max_len > 79)
-        max_len = 79;
-
-    name_len = strnlen((const char *)iccp->data, max_len);
-
-    if (*(iccp->data + name_len + 1))
+    ret = get_initial_text_len(&name_len, iccp, 79, error);
+    if (ret < 0)
         goto fail;
 
-    zbuf.data = iccp->data + name_len + 2;
-    zbuf.size = iccp->data_size - name_len - 2;
+    zbuf.data = iccp->data + name_len + 1;
+    zbuf.size = iccp->data_size - name_len - 1;
 
     return inflate_zlib_buffer(&zbuf, profile, error);
 
@@ -591,6 +606,63 @@ static int matches_srgb(const UmbBuffer *profile, const char **error) {
         return 0;
 
     return 1;
+}
+
+static int get_utf8_from_latin1(UmbBuffer *utf8, const UmbBuffer *latin1) {
+    const uint8_t *in = latin1->data;
+    const uint8_t *const end = latin1->data + latin1->size;
+    uint8_t *out;
+    void *temp;
+
+    temp = realloc(utf8->data, 2 * latin1->size + 1);
+    if (!temp)
+        return -1;
+    utf8->data = temp;
+
+    out = utf8->data;
+    while (in < end) {
+        if (*in < 0x80)
+            *out++ = *in++;
+        else {
+            *out++ = 0xc2 | ((*in & 0x40) >> 6);
+            *out++ = (*in++ & 0x3f) | 0x80;
+        }
+    }
+
+    *out = 0;
+
+    return 0;
+}
+
+static int parse_text(const UmbPngChunk *text, const UmbPngOptions *options, const char **error) {
+    int ret;
+    size_t init_len;
+    size_t body_len;
+    UmbBuffer utf8 = { 0 };
+    UmbBuffer latin1;
+
+    ret = get_initial_text_len(&init_len, text, 79, error);
+    if (ret < 0)
+        goto fail;
+
+    fprintf(stderr, "tEXt key: %s\n", text->data);
+    if (!options->verbose)
+        return 0;
+
+    latin1.size = text->data_size - init_len;
+    latin1.data = text->data + init_len;
+
+    ret = get_utf8_from_latin1(&utf8, &latin1);
+    if (ret < 0)
+        goto fail;
+
+    fprintf(stderr, "tEXt value: %s\n", utf8.data);
+
+    return 0;
+
+fail:
+    *error = "Error parsing tEXt chunk";
+    return -1;
 }
 
 static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, const char **error) {
@@ -921,6 +993,12 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             }
             if (options->verbose)
                 fprintf(stderr, "gAMA: %d\n", rbe32(curr_chain->chunk.data));
+        } else if (curr_chain->chunk.tag == tag_tEXt) {
+            ret = parse_text(&curr_chain->chunk, options, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: Warning: %s\n", argv0, error);
+                continue;
+            }
         }
     }
 
