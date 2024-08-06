@@ -164,10 +164,10 @@ typedef struct UmbPngScanData {
     int sbit[4];
 } UmbPngScanData;
 
-typedef struct UmbIccProfile {
+typedef struct UmbBuffer {
     size_t size;
-    uint8_t *icc_data;
-} UmbIccProfile;
+    uint8_t *data;
+} UmbBuffer;
 
 typedef struct UmbPngOptions {
     int verbose;
@@ -398,14 +398,58 @@ fail:
     return -1;
 }
 
-static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, const char **error) {
-    int ret;
+static int inflate_zlib_buffer(const UmbBuffer *zbuf, UmbBuffer *outbuf, const char **error) {
     z_stream strm = { 0 };
+    size_t size = zbuf->size;
+    size_t total_read = 0;
+    int ret;
+    void *temp;
+
+    ret = inflateInit(&strm);
+    if (ret != Z_OK)
+        goto fail;
+    temp = realloc(outbuf->data, size);
+    if (!temp)
+        goto fail;
+    outbuf->data = temp;
+
+    strm.next_in = zbuf->data;
+    strm.avail_in = zbuf->size;
+
+    do {
+        size_t have;
+        if (size <= total_read) {
+            size *= total_read / size + 1;
+            temp = realloc(outbuf->data, size);
+            if (!temp)
+                goto fail;
+            outbuf->data = temp;
+        }
+        strm.next_out = outbuf->data + total_read;
+        strm.avail_out = size - total_read;
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END)
+            goto fail;
+        have = size - total_read - strm.avail_out;
+        total_read += have;
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&strm);
+
+    outbuf->size = total_read;
+    return 0;
+fail:
+    inflateEnd(&strm);
+    freep(outbuf->data);
+    *error = "Error inflating zlib-compresed buffer";
+    return -1;
+}
+
+static int inflate_iccp(const UmbPngChunk *iccp, UmbBuffer *profile, const char **error) {
+    int ret;
     size_t max_len = iccp->data_size - 2;
     size_t name_len;
-    size_t total_size = 0;
-    size_t icc_buffer_size = 4096;
-    void *temp;
+    UmbBuffer zbuf;
 
     if (iccp->data_size < 4)
         goto fail;
@@ -415,53 +459,20 @@ static int inflate_iccp(const UmbPngChunk *iccp, UmbIccProfile *profile, const c
 
     name_len = strnlen((const char *)iccp->data, max_len);
 
-    ret = inflateInit(&strm);
-    if (ret != Z_OK)
-        goto fail;
-
     if (*(iccp->data + name_len + 1))
         goto fail;
 
-    temp = realloc(profile->icc_data, icc_buffer_size);
-    if (!temp)
-        goto fail;
-    profile->icc_data = temp;
+    zbuf.data = iccp->data + name_len + 2;
+    zbuf.size = iccp->data_size - name_len - 2;
 
-    strm.next_in = iccp->data + name_len + 2;
-    strm.avail_in = iccp->data_size - name_len - 2;
-
-    do {
-        size_t have;
-        if (icc_buffer_size <= total_size) {
-            icc_buffer_size *= 2;
-            temp = realloc(profile->icc_data, icc_buffer_size);
-            if (!temp)
-                goto fail;
-            profile->icc_data = temp;
-        }
-        strm.next_out = profile->icc_data + total_size;
-        strm.avail_out = icc_buffer_size - total_size;
-        ret = inflate(&strm, Z_NO_FLUSH);
-        if (ret != Z_OK && ret != Z_STREAM_END)
-            goto fail;
-        have = icc_buffer_size - total_size - strm.avail_out;
-        total_size += have;
-    } while (ret != Z_STREAM_END);
-
-    inflateEnd(&strm);
-
-    profile->size = total_size;
-
-    return 0;
+    return inflate_zlib_buffer(&zbuf, profile, error);
 
 fail:
-    inflateEnd(&strm);
-    freep(profile->icc_data);
     *error = "Error analyzing iCCP chunk data";
     return -1;
 }
 
-static int matches_srgb(const UmbIccProfile *profile, const char **error) {
+static int matches_srgb(const UmbBuffer *profile, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
     uint8_t tag[5] = { 0 };
@@ -475,17 +486,17 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
         return -1;
     }
 
-    if (rbe32(profile->icc_data) != profile->size) {
+    if (rbe32(profile->data) != profile->size) {
         *error = "ICC profile size mismatch";
         return -1;
     }
 
-    tag_count = rbe32(profile->icc_data + 128);
-    header = profile->icc_data + 132;
+    tag_count = rbe32(profile->data + 128);
+    header = profile->data + 132;
 
     for (uint32_t i = 0; i < tag_count; i++, header += 12) {
         uint32_t sig, offset, size;
-        if (header + 12 > profile->icc_data + profile->size) {
+        if (header + 12 > profile->data + profile->size) {
             *error = "ICC profile tag out of bounds";
             return -1;
         }
@@ -501,45 +512,45 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
                 *error = "Illegal `wtpt` tag size";
                 return -1;
             }
-            sig = rbe32(profile->icc_data + offset);
+            sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            wp[0] = rbe32(profile->icc_data + offset + 8);
-            wp[1] = rbe32(profile->icc_data + offset + 12);
-            wp[2] = rbe32(profile->icc_data + offset + 16);
+            wp[0] = rbe32(profile->data + offset + 8);
+            wp[1] = rbe32(profile->data + offset + 12);
+            wp[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('r','X','Y','Z')) {
             if (size != 20) {
                 *error = "Illegal `rXYZ` tag size";
                 return -1;
             }
-            sig = rbe32(profile->icc_data + offset);
+            sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            red[0] = rbe32(profile->icc_data + offset + 8);
-            red[1] = rbe32(profile->icc_data + offset + 12);
-            red[2] = rbe32(profile->icc_data + offset + 16);
+            red[0] = rbe32(profile->data + offset + 8);
+            red[1] = rbe32(profile->data + offset + 12);
+            red[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('g','X','Y','Z')) {
             if (size != 20) {
                 *error = "Illegal `gXYZ` tag size";
                 return -1;
             }
-            sig = rbe32(profile->icc_data + offset);
+            sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            green[0] = rbe32(profile->icc_data + offset + 8);
-            green[1] = rbe32(profile->icc_data + offset + 12);
-            green[2] = rbe32(profile->icc_data + offset + 16);
+            green[0] = rbe32(profile->data + offset + 8);
+            green[1] = rbe32(profile->data + offset + 12);
+            green[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('b','X','Y','Z')) {
             if (size != 20) {
                 *error = "Illegal `bXYZ` tag size";
                 return -1;
             }
-            sig = rbe32(profile->icc_data + offset);
+            sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
                 return 0;
-            blue[0] = rbe32(profile->icc_data + offset + 8);
-            blue[1] = rbe32(profile->icc_data + offset + 12);
-            blue[2] = rbe32(profile->icc_data + offset + 16);
+            blue[0] = rbe32(profile->data + offset + 8);
+            blue[1] = rbe32(profile->data + offset + 12);
+            blue[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('r','T','R','C') || sig == maketag('g','T','R','C') ||
                    sig == maketag('b','T','R','C')) {
             int32_t g, a, b, c, d, e = 0, f = 0;
@@ -547,22 +558,22 @@ static int matches_srgb(const UmbIccProfile *profile, const char **error) {
                 *error = "Illegal `?TRC` tag size";
                 return -1;
             }
-            sig = rbe32(profile->icc_data + offset);
+            sig = rbe32(profile->data + offset);
             if (sig != maketag('p','a','r','a'))
                 return 0;
-            sig = rbe32(profile->icc_data + offset + 8);
+            sig = rbe32(profile->data + offset + 8);
             if (sig != 0x30000 && sig != 0x40000)
                 return 0;
             if (size != 8 + (sig >> 13))
                 return 0;
-            g = rbe32(profile->icc_data + offset + 12);
-            a = rbe32(profile->icc_data + offset + 16);
-            b = rbe32(profile->icc_data + offset + 20);
-            c = rbe32(profile->icc_data + offset + 24);
-            d = rbe32(profile->icc_data + offset + 28);
+            g = rbe32(profile->data + offset + 12);
+            a = rbe32(profile->data + offset + 16);
+            b = rbe32(profile->data + offset + 20);
+            c = rbe32(profile->data + offset + 24);
+            d = rbe32(profile->data + offset + 28);
             if (sig == 0x40000) {
-                e = rbe32(profile->icc_data + offset + 32);
-                f = rbe32(profile->icc_data + offset + 36);
+                e = rbe32(profile->data + offset + 32);
+                f = rbe32(profile->data + offset + 36);
             }
             if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
                 !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
@@ -816,11 +827,11 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         if (ret < 0)
             goto flush;
         if (curr_chain->chunk.tag == tag_iCCP) {
-            UmbIccProfile profile = { 0 };
+            UmbBuffer profile = { 0 };
             ret = inflate_iccp(&curr_chain->chunk, &profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
-                freep(profile.icc_data);
+                freep(profile.data);
                 continue;
             }
             if (options->verbose)
@@ -832,7 +843,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "ICC profile matches sRGB profile\n");
                 data.icc_is_srgb = 1;
             }
-            freep(profile.icc_data);
+            freep(profile.data);
         } else if (curr_chain->chunk.tag == tag_IHDR) {
             ret = parse_ihdr(&curr_chain->chunk, &data, &error);
             if (ret < 0) {
