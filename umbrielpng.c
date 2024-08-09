@@ -1196,7 +1196,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         const char *error = argv0;
         int skip = 0;
         uint8_t tag[5] = { 0 };
-        for (int i = 0; i < sizeof(strip_chunks)/sizeof(strip_chunks[0]); i++) {
+        for (int i = 0; i < array_size(strip_chunks); i++) {
             if (strip_chunks[i] == curr_chain->chunk.tag) {
                 skip = 1;
                 break;
