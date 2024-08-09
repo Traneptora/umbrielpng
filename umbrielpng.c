@@ -690,7 +690,7 @@ static int parse_ztxt(const UmbPngChunk *ztxt, const UmbPngOptions *options, con
     zbuf.data = ztxt->data + init_len + 1;
     zbuf.size = ztxt->data_size - init_len - 1;
 
-    ret = inflate_zlib_buffer(&latin1, &zbuf, error);
+    ret = inflate_zlib_buffer(&zbuf, &latin1, error);
     if (ret < 0)
         goto end;
 
