@@ -499,7 +499,6 @@ fail:
 static int matches_srgb(const UmbBuffer *profile, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
-    uint8_t tag[5] = { 0 };
     int32_t wp[3] = { 0 };
     int32_t red[3] = { 0 };
     int32_t green[3] = { 0 };
