@@ -635,7 +635,7 @@ static int get_utf8_from_latin1(UmbBuffer *utf8, const UmbBuffer *latin1) {
 }
 
 static int parse_text(const UmbPngChunk *text, const UmbPngOptions *options, const char **error) {
-    int ret;
+    int ret = 0;
     size_t init_len;
     size_t body_len;
     UmbBuffer utf8 = { 0 };
@@ -643,26 +643,26 @@ static int parse_text(const UmbPngChunk *text, const UmbPngOptions *options, con
 
     ret = get_initial_text_len(&init_len, text, 79, error);
     if (ret < 0)
-        goto fail;
+        goto end;
 
     fprintf(stderr, "tEXt key: %s\n", text->data);
     if (!options->verbose)
-        return 0;
+        goto end;
 
     latin1.size = text->data_size - init_len;
     latin1.data = text->data + init_len;
 
     ret = get_utf8_from_latin1(&utf8, &latin1);
-    if (ret < 0)
-        goto fail;
+    if (ret < 0) {
+        *error = "Error converting Latin-1 tEXt to UTF-8";
+        goto end;
+    }
 
     fprintf(stderr, "tEXt value: %s\n", utf8.data);
 
-    return 0;
-
-fail:
-    *error = "Error parsing tEXt chunk";
-    return -1;
+end:
+    freep(utf8.data);
+    return ret;
 }
 
 static int parse_ztxt(const UmbPngChunk *ztxt, const UmbPngOptions *options, const char **error) {
