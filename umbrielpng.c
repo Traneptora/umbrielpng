@@ -34,6 +34,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -82,6 +83,8 @@
 #define tag_iTXt maketag('i','T','X','t')
 
 #define array_size(a) (sizeof((a))/sizeof(*(a)))
+
+#define NEGERROR(e) (-abs(e))
 
 typedef struct UmbPngChunk {
     uint32_t chunk_size;
@@ -340,7 +343,7 @@ static int read_chunk(FILE *in, UmbPngChunk *chunk, const char **error) {
         chunk->data = malloc(chunk->data_size);
     if (chunk->data_size && !chunk->data) {
         fprintf(stderr, "Allocation failed\n");
-        return -1;
+        return NEGERROR(ENOMEM);
     }
 
     if (chunk->data_size) {
@@ -624,7 +627,7 @@ static int get_utf8_from_latin1(UmbBuffer *utf8, const UmbBuffer *latin1) {
 
     temp = realloc(utf8->data, 2 * latin1->size + 1);
     if (!temp)
-        return -1;
+        return NEGERROR(ENOMEM);
     utf8->data = temp;
 
     out = utf8->data;
