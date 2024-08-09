@@ -271,6 +271,14 @@ static inline void wbe32(uint8_t *tag, uint32_t be32) {
     tag[3] = be32 & 0xFF;
 }
 
+static inline UmbBuffer buffer_from_chunk(const UmbPngChunk *chunk) {
+    UmbBuffer buf = {
+        .data = chunk->data,
+        .size = chunk->data_size,
+    };
+    return buf;
+}
+
 static int lookup_array(const LookupTableEntry *array, size_t len, const char *lookup) {
     for (size_t i = 0; i < len; i++) {
         for (size_t j = 0; array[i].names[j]; j++) {
@@ -446,16 +454,16 @@ fail:
     return -1;
 }
 
-static int get_initial_text_len(size_t *init_len, const UmbPngChunk *chunk, size_t max_len, const char **error) {
-    size_t max = chunk->data_size;
+static int get_initial_text_len(size_t *init_len, const UmbBuffer *buffer, size_t max_len, const char **error) {
+    size_t max = buffer->size;
     size_t text_len;
 
     if (max > max_len)
         max = max_len;
 
-    text_len = strnlen((const char *) chunk->data, max);
+    text_len = strnlen((const char *) buffer->data, max);
 
-    if (chunk->data[text_len]) {
+    if (buffer->data[text_len]) {
         *error = "Not null terminated initial text";
         return -1;
     }
@@ -469,11 +477,12 @@ static int inflate_iccp(const UmbPngChunk *iccp, UmbBuffer *profile, const char 
     int ret;
     size_t name_len;
     UmbBuffer zbuf;
+    UmbBuffer iccp_buf = buffer_from_chunk(iccp);
 
     if (iccp->data_size < 4)
         goto fail;
 
-    ret = get_initial_text_len(&name_len, iccp, 79, error);
+    ret = get_initial_text_len(&name_len, &iccp_buf, 79, error);
     if (ret < 0)
         goto fail;
 
@@ -637,16 +646,16 @@ static int get_utf8_from_latin1(UmbBuffer *utf8, const UmbBuffer *latin1) {
 static int parse_text(const UmbPngChunk *text, const UmbPngOptions *options, const char **error) {
     int ret = 0;
     size_t init_len;
-    size_t body_len;
     UmbBuffer utf8 = { 0 };
     UmbBuffer latin1;
+    UmbBuffer text_buf = buffer_from_chunk(text);
 
-    ret = get_initial_text_len(&init_len, text, 79, error);
+    ret = get_initial_text_len(&init_len, &text_buf, 79, error);
     if (ret < 0)
         goto end;
 
     fprintf(stderr, "tEXt key: %s\n", text->data);
-    if (!options->verbose)
+    if (options->verbose < 2)
         goto end;
 
     latin1.size = text->data_size - init_len;
@@ -668,12 +677,12 @@ end:
 static int parse_ztxt(const UmbPngChunk *ztxt, const UmbPngOptions *options, const char **error) {
     int ret = 0;
     size_t init_len;
-    size_t body_len;
     UmbBuffer zbuf;
     UmbBuffer latin1 = { 0 };
     UmbBuffer utf8 = { 0 };
+    UmbBuffer ztxt_buf = buffer_from_chunk(ztxt);
 
-    ret = get_initial_text_len(&init_len, ztxt, 79, error);
+    ret = get_initial_text_len(&init_len, &ztxt_buf, 79, error);
     if (ret < 0)
         goto end;
 
@@ -684,7 +693,7 @@ static int parse_ztxt(const UmbPngChunk *ztxt, const UmbPngOptions *options, con
         goto end;
     }
 
-    if (!options->verbose)
+    if (options->verbose < 2)
         goto end;
 
     zbuf.data = ztxt->data + init_len + 1;
@@ -704,6 +713,97 @@ end:
     freep(utf8.data);
     freep(latin1.data);
 
+    return ret;
+}
+
+static int parse_itxt(const UmbPngChunk *itxt, const UmbPngOptions *options, const char **error) {
+    int ret = 0;
+    size_t init_len;
+    UmbBuffer curr_buff = buffer_from_chunk(itxt);
+    UmbBuffer inflated = { 0 };
+    int compressed, method;
+
+    ret = get_initial_text_len(&init_len, &curr_buff, 79, error);
+    if (ret < 0)
+        goto end;
+
+    fprintf(stderr, "iTXt key: %s\n", curr_buff.data);
+    if (options->verbose < 1)
+        goto end;
+
+    if (curr_buff.size < init_len + 2) {
+        *error = "iTXt chunk too small";
+        ret = -1;
+        goto end;
+    }
+
+    compressed = curr_buff.data[init_len];
+    method = curr_buff.data[init_len + 1];
+    curr_buff.data += init_len + 2;
+    curr_buff.size -= init_len + 2;
+
+    if (compressed && method) {
+        *error = "Invalid iTXt compression method";
+        ret = -1;
+        goto end;
+    }
+
+    fprintf(stderr, "iTXt compression: %s\n", compressed ? "compressed" : "uncompressed");
+
+    if (curr_buff.size < 1) {
+        *error = "iTXt chunk too small";
+        ret = -1;
+        goto end;
+    }
+
+    ret = get_initial_text_len(&init_len, &curr_buff, curr_buff.size, error);
+    if (ret < 0)
+        goto end;
+
+    if (init_len <= 1)
+        fprintf(stderr, "iTXt lang: Unspecified\n");
+    else
+        fprintf(stderr, "iTXt lang: %s\n", curr_buff.data);
+
+    curr_buff.data += init_len;
+    curr_buff.size -= init_len;
+
+    if (curr_buff.size < 1) {
+        *error = "iTXt chunk too small";
+        ret = -1;
+        goto end;
+    }
+
+    ret = get_initial_text_len(&init_len, &curr_buff, curr_buff.size, error);
+    if (ret < 0)
+        goto end;
+
+    fprintf(stderr, "iTXt translated key: %s\n", curr_buff.data);
+
+    if (options->verbose < 2)
+        goto end;
+
+    curr_buff.data += init_len;
+    curr_buff.size -= init_len;
+
+    if (!curr_buff.size)
+        goto end;
+
+    if (compressed) {
+        ret = inflate_zlib_buffer(&curr_buff, &inflated, error);
+        if (ret < 0)
+            goto end;
+        if (!inflated.size)
+            goto end;
+    }
+
+    fprintf(stderr, "iTXt value: ");
+    fwrite(compressed ? inflated.data : curr_buff.data, compressed ? inflated.size : curr_buff.size, 1, stderr);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+
+end:
+    freep(inflated.data);
     return ret;
 }
 
@@ -1047,6 +1147,12 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
                 continue;
             }
+        } else if (curr_chain->chunk.tag == tag_iTXt) {
+            ret = parse_itxt(&curr_chain->chunk, options, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: Warning: %s\n", argv0, error);
+                continue;
+            }
         }
     }
 
@@ -1227,7 +1333,7 @@ int main(int argc, const char *argv[]) {
         } else if (!strcmp("--", argv[i])) {
             options_done = 1;
         } else if (!strcmp("-v", argv[i]) || !strcmp("--verbose", argv[i])) {
-            options.verbose = 1;
+            options.verbose++;
         } else if (!strcmp("--fix-in-place", argv[i])) {
             options.fix = 1;
         } else if (!strcmp("--srgb", argv[i])) {
