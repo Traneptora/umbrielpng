@@ -665,6 +665,48 @@ fail:
     return -1;
 }
 
+static int parse_ztxt(const UmbPngChunk *ztxt, const UmbPngOptions *options, const char **error) {
+    int ret = 0;
+    size_t init_len;
+    size_t body_len;
+    UmbBuffer zbuf;
+    UmbBuffer latin1 = { 0 };
+    UmbBuffer utf8 = { 0 };
+
+    ret = get_initial_text_len(&init_len, ztxt, 79, error);
+    if (ret < 0)
+        goto end;
+
+    fprintf(stderr, "zTXt key: %s\n", ztxt->data);
+
+    if (ztxt->data[init_len]) {
+        fprintf(stderr, "Warning: Unknown zTXt compression method: %d\n", ztxt->data[init_len]);
+        goto end;
+    }
+
+    if (!options->verbose)
+        goto end;
+
+    zbuf.data = ztxt->data + init_len + 1;
+    zbuf.size = ztxt->data_size - init_len - 1;
+
+    ret = inflate_zlib_buffer(&latin1, &zbuf, error);
+    if (ret < 0)
+        goto end;
+
+    ret = get_utf8_from_latin1(&utf8, &latin1);
+    if (ret < 0)
+        goto end;
+
+    fprintf(stderr, "zTXt value: %s\n", utf8.data);
+
+end:
+    freep(utf8.data);
+    freep(latin1.data);
+
+    return ret;
+}
+
 static int parse_ihdr(const UmbPngChunk *ihdr, UmbPngScanData *data, const char **error) {
 
     if (ihdr->data_size != 13) {
@@ -995,6 +1037,12 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 fprintf(stderr, "gAMA: %d\n", rbe32(curr_chain->chunk.data));
         } else if (curr_chain->chunk.tag == tag_tEXt) {
             ret = parse_text(&curr_chain->chunk, options, &error);
+            if (ret < 0) {
+                fprintf(stderr, "%s: Warning: %s\n", argv0, error);
+                continue;
+            }
+        } else if (curr_chain->chunk.tag == tag_zTXt) {
+            ret = parse_ztxt(&curr_chain->chunk, options, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
                 continue;
