@@ -457,11 +457,22 @@ fail:
     return -1;
 }
 
+/**
+ * Wrapper around strnlen, caps at max_len, or buffer->size if max_len is zero
+ * If the terminating '\0' is not found, returns an error.
+ *
+ * This is used when parsing various chunks that have a 1-79 byte keyword
+ * followed by a NUL terminator.
+ *
+ * init_len includes the terminating NUL byte, unlike strlen() and family.
+ *
+ * If an error is returned, init_len is left untouched.
+ */
 static int get_initial_text_len(size_t *init_len, const UmbBuffer *buffer, size_t max_len, const char **error) {
     size_t max = buffer->size;
     size_t text_len;
 
-    if (max > max_len)
+    if (max_len && max > max_len)
         max = max_len;
 
     text_len = strnlen((const char *) buffer->data, max);
@@ -476,6 +487,12 @@ static int get_initial_text_len(size_t *init_len, const UmbBuffer *buffer, size_
     return 0;
 }
 
+/**
+ * Extracts the ICC profile from the iCCP chunk and allocates it into
+ * the buffer in *profile. profile->data must be already allocated, or NULL.
+ *
+ * The returned profile must be freed elsewhere.
+ */
 static int inflate_iccp(const UmbPngChunk *iccp, UmbBuffer *profile, const char **error) {
     int ret;
     size_t name_len;
@@ -499,6 +516,14 @@ fail:
     return -1;
 }
 
+/**
+ * Determines if the given ICC profile stored in the buffer represents the
+ * sRGB color space. It does this heurisically by checking the RGB primaries,
+ * the white point (D65), and the TRC funcctions.
+ *
+ * @return if the profile is likely to be sRGB, the function returns 1,
+ * otherwise 0. Returns negative on an illegal ICC profile.
+ */
 static int matches_srgb(const UmbBuffer *profile, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
@@ -619,6 +644,25 @@ static int matches_srgb(const UmbBuffer *profile, const char **error) {
     return 1;
 }
 
+/**
+ * Allocates a UTF-8 buffer from the given Latin-1 buffer.
+ *
+ * Latin-1 is an extension of ASCII that uses one-byte 0-255 to represent
+ * Unicode code points between 0 and 255. UTF-8 is a variable-length extension
+ * of ASCIIthat uses one byte to represent code points 0-127, and two bytes to
+ * represent code points 128-255 (plus others, not relevant here), by splitting
+ * the bits into 110xxxxx -> 10xxxxxx.
+ *
+ * Because code points 128-255 all require 8 bits, this is effectively just
+ * 110000xx -> 10xxxxxx.
+ *
+ * The latin-1 buffer here does not need to be NUL-terminated. This function always
+ * NUL-terminates the UTF-8 buffer that it allocates and returns.
+ *
+ * utf8->data needs to be freed elsewhere via free() or equivalent.
+ *
+ * @return This function returns 0 on success and negative on failure.
+ */
 static int get_utf8_from_latin1(UmbBuffer *utf8, const UmbBuffer *latin1) {
     const uint8_t *in = latin1->data;
     const uint8_t *const end = latin1->data + latin1->size;
