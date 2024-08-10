@@ -1342,9 +1342,11 @@ flush:
 }
 
 static int usage(int ret, const char *argv0) {   
-    fprintf(stderr, "Usage: %s [-v | --verbose] [options] [--] <png...>\n", argv0);
+    fprintf(stderr, "Usage: %s [options] [--] <png...>\n", argv0);
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "    --fix-in-place | -o <output> | --o=<output>\n");
+    fprintf(stderr, "    -v, --verbose\n");
+    fprintf(stderr, "        Be verbose. Specify twice to be extra verbose.\n");
+    fprintf(stderr, "    --fix-in-place, -o <output>, --o=<output>\n");
     fprintf(stderr, "        Fix the PNG file. --fix-in-place works in place, otherwise use the provided output.\n");
     fprintf(stderr, "    --cicp-prim=<primaries>\n");
     fprintf(stderr, "    --cicp-trc=<transfer>\n");
