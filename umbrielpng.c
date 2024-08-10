@@ -82,6 +82,9 @@
 #define tag_zTXt maketag('z','T','X','t')
 #define tag_iTXt maketag('i','T','X','t')
 
+#define tag_cLLi maketag('c','L','L','i')
+#define tag_mDCv maketag('m','D','C','v')
+
 #define array_size(a) (sizeof((a))/sizeof(*(a)))
 
 #define NEGERROR(e) (-abs(e))
