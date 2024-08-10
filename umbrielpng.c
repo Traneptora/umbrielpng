@@ -203,7 +203,7 @@ static const uint8_t png_signature[8] = {
 
 typedef struct LookupTableEntry {
     int index;
-    char *names[8];
+    const char *names[8];
 } LookupTableEntry;
 
 static const LookupTableEntry prim_names[] = {
