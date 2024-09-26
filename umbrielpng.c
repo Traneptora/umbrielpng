@@ -261,6 +261,13 @@ static const uint32_t default_chrm_data[8] = {
     31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000,
 };
 
+static const char *const srgb_rendering_intents[] = {
+    "Perceptual",
+    "Relative",
+    "Saturation",
+    "Absolute",
+};
+
 static const uint32_t strip_chunks[8] = {
     tag_bKGD, tag_eXIf, tag_pHYs, tag_sPLT,
     tag_tIME, tag_tEXt, tag_zTXt, tag_iTXt,
@@ -1184,6 +1191,21 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             }
             if (options->verbose)
                 fprintf(stderr, "gAMA: %d\n", rbe32(curr_chain->chunk.data));
+        } else if (curr_chain->chunk.tag == tag_sRGB) {
+            if (curr_chain->chunk.data_size != 1) {
+                fprintf(stderr, "%s: Warning: Illegal sRGB size: %" PRIu32 "\n", argv0, curr_chain->chunk.data_size);
+                continue;
+            }
+            unsigned rintent = curr_chain->chunk.data[0];
+            const char *intent = NULL;
+            if (rintent < array_size(srgb_rendering_intents))
+                intent = srgb_rendering_intents[rintent];
+            if (!intent) {
+                fprintf(stderr, "%s: Warning: Illegal sRGB intent: %u\n", argv0, rintent);
+                continue;
+            }
+            if (options->verbose)
+                fprintf(stderr, "sRGB: Intent: %s\n", intent);
         } else if (curr_chain->chunk.tag == tag_tEXt) {
             ret = parse_text(&curr_chain->chunk, options, &error);
             if (ret < 0) {
