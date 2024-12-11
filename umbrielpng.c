@@ -186,6 +186,14 @@ typedef struct UmbPngOptions {
     int forced_trc;
 } UmbPngOptions;
 
+typedef struct UmbPngIccScan {
+    int32_t wp_xyz[3];
+    int32_t red_xyz[3];
+    int32_t green_xyz[3];
+    int32_t blue_xyz[3];
+    int32_t para_curv[7];
+} UmbPngIccScan;
+
 static const char *const color_names[7] = {
     "Grayscale",
     "",
@@ -526,21 +534,15 @@ fail:
     return -1;
 }
 
-/**
- * Determines if the given ICC profile stored in the buffer represents the
- * sRGB color space. It does this heurisically by checking the RGB primaries,
- * the white point (D65), and the TRC funcctions.
- *
- * @return if the profile is likely to be sRGB, the function returns 1,
- * otherwise 0. Returns negative on an illegal ICC profile.
- */
-static int matches_srgb(const UmbBuffer *profile, const char **error) {
+static inline void xyz_to_xy(int32_t xyz[3], int32_t xy[2]) {
+    int32_t total = xyz[0] + xyz[1] + xyz[2];
+    xy[0] = (int32_t) ((xyz[0] * 100000.0f) / total);
+    xy[1] = (int32_t) ((xyz[1] * 100000.0f) / total);
+}
+
+static int scan_icc(const UmbBuffer *profile, UmbPngIccScan *scan, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
-    int32_t wp[3] = { 0 };
-    int32_t red[3] = { 0 };
-    int32_t green[3] = { 0 };
-    int32_t blue[3] = { 0 };
 
     if (profile->size < 144) {
         *error = "ICC profile too short";
@@ -575,10 +577,10 @@ static int matches_srgb(const UmbBuffer *profile, const char **error) {
             }
             sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
-                return 0;
-            wp[0] = rbe32(profile->data + offset + 8);
-            wp[1] = rbe32(profile->data + offset + 12);
-            wp[2] = rbe32(profile->data + offset + 16);
+                continue;
+            scan->wp_xyz[0] = rbe32(profile->data + offset + 8);
+            scan->wp_xyz[1] = rbe32(profile->data + offset + 12);
+            scan->wp_xyz[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('r','X','Y','Z')) {
             if (size != 20) {
                 *error = "Illegal `rXYZ` tag size";
@@ -586,10 +588,10 @@ static int matches_srgb(const UmbBuffer *profile, const char **error) {
             }
             sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
-                return 0;
-            red[0] = rbe32(profile->data + offset + 8);
-            red[1] = rbe32(profile->data + offset + 12);
-            red[2] = rbe32(profile->data + offset + 16);
+                continue;
+            scan->red_xyz[0] = rbe32(profile->data + offset + 8);
+            scan->red_xyz[1] = rbe32(profile->data + offset + 12);
+            scan->red_xyz[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('g','X','Y','Z')) {
             if (size != 20) {
                 *error = "Illegal `gXYZ` tag size";
@@ -597,10 +599,10 @@ static int matches_srgb(const UmbBuffer *profile, const char **error) {
             }
             sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
-                return 0;
-            green[0] = rbe32(profile->data + offset + 8);
-            green[1] = rbe32(profile->data + offset + 12);
-            green[2] = rbe32(profile->data + offset + 16);
+                continue;
+            scan->green_xyz[0] = rbe32(profile->data + offset + 8);
+            scan->green_xyz[1] = rbe32(profile->data + offset + 12);
+            scan->green_xyz[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('b','X','Y','Z')) {
             if (size != 20) {
                 *error = "Illegal `bXYZ` tag size";
@@ -608,48 +610,65 @@ static int matches_srgb(const UmbBuffer *profile, const char **error) {
             }
             sig = rbe32(profile->data + offset);
             if (sig != maketag('X','Y','Z',' '))
-                return 0;
-            blue[0] = rbe32(profile->data + offset + 8);
-            blue[1] = rbe32(profile->data + offset + 12);
-            blue[2] = rbe32(profile->data + offset + 16);
+                continue;
+            scan->blue_xyz[0] = rbe32(profile->data + offset + 8);
+            scan->blue_xyz[1] = rbe32(profile->data + offset + 12);
+            scan->blue_xyz[2] = rbe32(profile->data + offset + 16);
         } else if (sig == maketag('r','T','R','C') || sig == maketag('g','T','R','C') ||
                    sig == maketag('b','T','R','C')) {
-            int32_t g, a, b, c, d, e = 0, f = 0;
             if (size < 12) {
                 *error = "Illegal `?TRC` tag size";
                 return -1;
             }
             sig = rbe32(profile->data + offset);
             if (sig != maketag('p','a','r','a'))
-                return 0;
+                continue;
             sig = rbe32(profile->data + offset + 8);
             if (sig != 0x30000 && sig != 0x40000)
-                return 0;
+                continue;
             if (size != 8 + (sig >> 13))
-                return 0;
-            g = rbe32(profile->data + offset + 12);
-            a = rbe32(profile->data + offset + 16);
-            b = rbe32(profile->data + offset + 20);
-            c = rbe32(profile->data + offset + 24);
-            d = rbe32(profile->data + offset + 28);
+                continue;
+            scan->para_curv[0] = rbe32(profile->data + offset + 12);
+            scan->para_curv[1] = rbe32(profile->data + offset + 16);
+            scan->para_curv[2] = rbe32(profile->data + offset + 20);
+            scan->para_curv[3] = rbe32(profile->data + offset + 24);
+            scan->para_curv[4] = rbe32(profile->data + offset + 28);
             if (sig == 0x40000) {
-                e = rbe32(profile->data + offset + 32);
-                f = rbe32(profile->data + offset + 36);
+                scan->para_curv[5] = rbe32(profile->data + offset + 32);
+                scan->para_curv[6] = rbe32(profile->data + offset + 36);
+            } else {
+                scan->para_curv[5] = 0;
+                scan->para_curv[6] = 0;
             }
-            if (!within(g,157286,32) || !within(a,62119,32) || !within(b,3416,32) ||
-                !within(c,5072,32) || !within(d,2651,32) || !within(e,0,32) || !within(f,0,32))
-                return 0;
         }
     }
 
-    if (!within(wp[0],63190,32) || !within(wp[1],65536,32) || !within(wp[2],54061,32))
-        return 0;
-    if (!within(red[0],28564,32) || !within(red[1],14574,32) || !within(red[2],912,32))
-        return 0;
-    if (!within(green[0],25253,32) || !within(green[1],46992,32) || !within(green[2],6366,32))
-        return 0;
-    if (!within(blue[0],9373,32) || !within(blue[1],3971,32) || !within(blue[2],46782,32))
-        return 0;
+    return 0;
+}
+
+static const UmbPngIccScan srgb_icc_profile = {
+    .wp_xyz = {63190, 65536, 54061},
+    .red_xyz = {28564, 14574, 912},
+    .green_xyz = {25253, 46992, 6336},
+    .blue_xyz = {9373, 3971, 46782},
+    .para_curv = {157286, 62119, 3416, 5072, 2651, 0, 0},
+};
+
+static int matches_srgb(const UmbPngIccScan *scan) {
+    for (int i = 0; i < array_size(srgb_icc_profile.para_curv); i++) {
+        if (!within(srgb_icc_profile.para_curv[i], scan->para_curv[i], 32))
+            return 0;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!within(srgb_icc_profile.wp_xyz[i], scan->wp_xyz[i], 32))
+            return 0;
+        if (!within(srgb_icc_profile.red_xyz[i], scan->red_xyz[i], 32))
+            return 0;
+        if (!within(srgb_icc_profile.green_xyz[i], scan->green_xyz[i], 32))
+            return 0;
+        if (!within(srgb_icc_profile.blue_xyz[i], scan->blue_xyz[i], 32))
+            return 0;
+    }
 
     return 1;
 }
@@ -1098,6 +1117,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             goto flush;
         if (curr_chain->chunk.tag == tag_iCCP) {
             UmbBuffer profile = { 0 };
+            UmbPngIccScan scan = { 0 };
             ret = inflate_iccp(&curr_chain->chunk, &profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
@@ -1106,12 +1126,24 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             }
             if (options->verbose)
                 fprintf(stderr, "ICC Profile Length: %llu\n", (long long unsigned)profile.size);
-            ret = matches_srgb(&profile, &error);
+            ret = scan_icc(&profile, &scan, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
-            } else if (ret > 0) {
+                freep(profile.data);
+                continue;
+            }
+            if (matches_srgb(&scan)) {
                 fprintf(stderr, "ICC profile matches sRGB profile\n");
                 data.icc_is_srgb = 1;
+            }
+            if (options->verbose) {
+                int32_t iccp_xy[4][2];
+                xyz_to_xy(scan.wp_xyz, iccp_xy[0]);
+                xyz_to_xy(scan.red_xyz, iccp_xy[1]);
+                xyz_to_xy(scan.green_xyz, iccp_xy[2]);
+                xyz_to_xy(scan.blue_xyz, iccp_xy[3]);
+                fprintf(stderr, "iCCP: wp: %u, %u, r: %u, %u, g: %u, %u, b: %u, %u\n", iccp_xy[0][0], iccp_xy[0][1],
+                    iccp_xy[1][0], iccp_xy[1][1], iccp_xy[2][0], iccp_xy[2][1], iccp_xy[3][0], iccp_xy[3][1]);
             }
             freep(profile.data);
         } else if (curr_chain->chunk.tag == tag_IHDR) {
@@ -1180,7 +1212,8 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             if (!memcmp(values, default_chrm_data, sizeof(values))) {
                 data.chrm_is_srgb = 1;
                 fprintf(stderr, "cHRM matches sRGB space\n");
-            } else if (options->verbose) {
+            }
+            if (options->verbose) {
                 fprintf(stderr, "cHRM: wp: %u, %u, r: %u, %u, g: %u, %u, b: %u, %u\n", values[0], values[1],
                     values[2], values[3], values[4], values[5], values[6], values[7]);
             }
