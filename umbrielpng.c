@@ -47,8 +47,7 @@
 
 #define maketag(a,b,c,d) ((((uint32_t)(a)) << 24) | (((uint32_t)(b)) << 16) |\
                          (((uint32_t)(c)) << 8) | (uint32_t)(d))
-#define abs(a) ((a) < 0 ? -(a) : (a))
-#define within(a,b,tolerance) (abs((a)-(b)) <= (tolerance))
+#define within(a,b,tolerance) (labs((a)-(b)) <= (tolerance))
 
 #define freep(p) do {   \
     if (p) free(p);     \
@@ -88,7 +87,7 @@
 
 #define array_size(a) (sizeof((a))/sizeof(*(a)))
 
-#define NEGERROR(e) (-abs(e))
+#define NEGERROR(e) (-labs(e))
 
 typedef struct UmbPngChunk {
     uint32_t chunk_size;
