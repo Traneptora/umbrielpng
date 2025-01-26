@@ -42,6 +42,7 @@
 #include <string.h>
 #include <strings.h>
 
+#define ZLIB_CONST
 #include <zlib.h>
 
 #define maketag(a,b,c,d) ((((uint32_t)(a)) << 24) | (((uint32_t)(b)) << 16) |\
