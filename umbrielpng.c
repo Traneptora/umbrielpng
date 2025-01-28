@@ -281,6 +281,14 @@ static const uint32_t strip_chunks[8] = {
     tag_tIME, tag_tEXt, tag_zTXt, tag_iTXt,
 };
 
+static const UmbPngIccScan srgb_icc_profile = {
+    .wp_xyz = {63190, 65536, 54061},
+    .red_xyz = {28564, 14574, 912},
+    .green_xyz = {25253, 46992, 6336},
+    .blue_xyz = {9373, 3971, 46782},
+    .para_curv = {157286, 62119, 3416, 5072, 2651, 0, 0},
+};
+
 static inline uint32_t rbe32(const uint8_t *tag) {
    return maketag(tag[0],tag[1],tag[2],tag[3]);
 }
@@ -298,6 +306,12 @@ static inline UmbBuffer buffer_from_chunk(const UmbPngChunk *chunk) {
         .size = chunk->data_size,
     };
     return buf;
+}
+
+static inline void xyz_to_xy(int32_t xyz[3], int32_t xy[2]) {
+    int32_t total = xyz[0] + xyz[1] + xyz[2];
+    xy[0] = (int32_t) ((xyz[0] * 100000.0f) / total);
+    xy[1] = (int32_t) ((xyz[1] * 100000.0f) / total);
 }
 
 static int lookup_array(const LookupTableEntry *array, size_t len, const char *lookup) {
@@ -534,12 +548,6 @@ fail:
     return -1;
 }
 
-static inline void xyz_to_xy(int32_t xyz[3], int32_t xy[2]) {
-    int32_t total = xyz[0] + xyz[1] + xyz[2];
-    xy[0] = (int32_t) ((xyz[0] * 100000.0f) / total);
-    xy[1] = (int32_t) ((xyz[1] * 100000.0f) / total);
-}
-
 static int scan_icc(const UmbBuffer *profile, UmbPngIccScan *scan, const char **error) {
     uint8_t *header;
     uint32_t tag_count;
@@ -646,19 +654,12 @@ static int scan_icc(const UmbBuffer *profile, UmbPngIccScan *scan, const char **
     return 0;
 }
 
-static const UmbPngIccScan srgb_icc_profile = {
-    .wp_xyz = {63190, 65536, 54061},
-    .red_xyz = {28564, 14574, 912},
-    .green_xyz = {25253, 46992, 6336},
-    .blue_xyz = {9373, 3971, 46782},
-    .para_curv = {157286, 62119, 3416, 5072, 2651, 0, 0},
-};
-
+/**
+ * Returns how much the ICC profile matches sRGB. This function
+ * returns 0 if the primaries do not match, it returns 1 if the primaries
+ * match but not the transfer characteristics, and 2 if both match.
+ */
 static int matches_srgb(const UmbPngIccScan *scan) {
-    for (int i = 0; i < array_size(srgb_icc_profile.para_curv); i++) {
-        if (!within(srgb_icc_profile.para_curv[i], scan->para_curv[i], 32))
-            return 0;
-    }
     for (int i = 0; i < 3; i++) {
         if (!within(srgb_icc_profile.wp_xyz[i], scan->wp_xyz[i], 32))
             return 0;
@@ -670,7 +671,12 @@ static int matches_srgb(const UmbPngIccScan *scan) {
             return 0;
     }
 
-    return 1;
+    for (int i = 0; i < array_size(srgb_icc_profile.para_curv); i++) {
+        if (!within(srgb_icc_profile.para_curv[i], scan->para_curv[i], 32))
+            return 1;
+    }
+
+    return 2;
 }
 
 /**
@@ -1118,6 +1124,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         if (curr_chain->chunk.tag == tag_iCCP) {
             UmbBuffer profile = { 0 };
             UmbPngIccScan scan = { 0 };
+            int match;
             ret = inflate_iccp(&curr_chain->chunk, &profile, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
@@ -1132,9 +1139,12 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 freep(profile.data);
                 continue;
             }
-            if (matches_srgb(&scan)) {
+            match = matches_srgb(&scan);
+            if (match == 2) {
                 fprintf(stderr, "ICC profile matches sRGB profile\n");
                 data.icc_is_srgb = 1;
+            } else if (match == 1) {
+                fprintf(stderr, "ICC profile represents a non-sRGB profile with sRGB primaries\n");
             }
             if (options->verbose) {
                 int32_t iccp_xy[4][2];
