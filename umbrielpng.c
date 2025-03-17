@@ -308,7 +308,7 @@ static inline UmbBuffer buffer_from_chunk(const UmbPngChunk *chunk) {
     return buf;
 }
 
-static inline void xyz_to_xy(int32_t xyz[3], int32_t xy[2]) {
+static inline void xyz_to_xy(const int32_t xyz[3], int32_t xy[2]) {
     int32_t total = xyz[0] + xyz[1] + xyz[2];
     xy[0] = (int32_t) ((xyz[0] * 100000.0f) / total);
     xy[1] = (int32_t) ((xyz[1] * 100000.0f) / total);
