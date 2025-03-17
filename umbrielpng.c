@@ -720,6 +720,7 @@ static int get_utf8_from_latin1(UmbBuffer *utf8, const UmbBuffer *latin1) {
     }
 
     *out = 0;
+    utf8->size = (out - utf8->data) + 1;
 
     return 0;
 }
