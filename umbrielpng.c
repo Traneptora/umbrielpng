@@ -64,6 +64,8 @@
 #define tag_sRGB maketag('s','R','G','B')
 #define tag_cHRM maketag('c','H','R','M')
 #define tag_gAMA maketag('g','A','M','A')
+#define tag_cLLi maketag('c','L','L','i')
+#define tag_mDCv maketag('m','D','C','v')
 
 #define tag_fdAT maketag('f','d','A','T')
 #define tag_acTL maketag('a','c','T','L')
@@ -74,16 +76,14 @@
 #define tag_hIST maketag('h','I','S','T')
 
 #define tag_bKGD maketag('b','K','G','D')
-#define tag_eXIf maketag('e','X','I','f')
 #define tag_pHYs maketag('p','H','Y','s')
 #define tag_sPLT maketag('s','P','L','T')
 #define tag_tIME maketag('t','I','M','E')
+
+#define tag_eXIf maketag('e','X','I','f')
 #define tag_tEXt maketag('t','E','X','t')
 #define tag_zTXt maketag('z','T','X','t')
 #define tag_iTXt maketag('i','T','X','t')
-
-#define tag_cLLi maketag('c','L','L','i')
-#define tag_mDCv maketag('m','D','C','v')
 
 #define array_size(a) (sizeof((a))/sizeof(*(a)))
 
@@ -151,6 +151,19 @@ enum UmbPngColorTrc {
     TRC_ARIB_STD_B67_HLG,
 };
 
+enum UmbStrippiness {
+    /* strip no chunks */
+    STR_NONE,
+    /* strip overridden color chunks only */
+    STR_LOW,
+    /* strip bKGD, tIME, pHYS, and sPLT plus lower */
+    STR_MED,
+    /* strip eXIf, tEXt, zTXt, and iTXt plus lower */
+    STR_HIGH,
+    /* strip all noncritical chunks */
+    STR_ALL,
+};
+
 typedef struct UmbPngScanData {
     int have_cicp;
     int have_iccp;
@@ -184,6 +197,7 @@ typedef struct UmbPngOptions {
     int force_cicp;
     int forced_prim;
     int forced_trc;
+    int strippiness;
 } UmbPngOptions;
 
 typedef struct UmbPngIccScan {
@@ -216,6 +230,14 @@ typedef struct LookupTableEntry {
     int index;
     const char *names[8];
 } LookupTableEntry;
+
+static const LookupTableEntry strip_names[] = {
+    {STR_NONE, {"0", "none", NULL}},
+    {STR_LOW, {"1", "low", NULL}},
+    {STR_MED, {"2", "default", "medium", NULL}},
+    {STR_HIGH, {"3", "high", NULL}},
+    {STR_ALL, {"4", "all", "full", NULL}},
+};
 
 static const LookupTableEntry prim_names[] = {
     {PRIM_RESERVED0, {"0", "Reserved0", NULL}},
@@ -276,9 +298,17 @@ static const char *const srgb_rendering_intents[] = {
     "Absolute",
 };
 
-static const uint32_t strip_chunks[8] = {
-    tag_bKGD, tag_eXIf, tag_pHYs, tag_sPLT,
-    tag_tIME, tag_tEXt, tag_zTXt, tag_iTXt,
+static const uint32_t strip_chunks_med[] = {
+    tag_bKGD, tag_tIME, tag_pHYs, tag_sPLT,
+};
+
+static const uint32_t strip_chunks_high[] = {
+    tag_eXIf, tag_tEXt, tag_zTXt, tag_iTXt,
+};
+
+static const uint32_t unstrip_chunks_full[] = {
+    tag_IDAT, tag_IHDR, tag_IEND, tag_PLTE,
+    tag_fcTL, tag_acTL, tag_fdAT,
 };
 
 static const UmbPngIccScan srgb_icc_profile = {
@@ -684,7 +714,7 @@ static int matches_srgb(const UmbPngIccScan *scan) {
  *
  * Latin-1 is an extension of ASCII that uses one-byte 0-255 to represent
  * Unicode code points between 0 and 255. UTF-8 is a variable-length extension
- * of ASCIIthat uses one byte to represent code points 0-127, and two bytes to
+ * of ASCII that uses one byte to represent code points 0-127, and two bytes to
  * represent code points 128-255 (plus others, not relevant here), by splitting
  * the bits into 110xxxxx -> 10xxxxxx.
  *
@@ -1106,10 +1136,10 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         }
         if (curr_chain->chunk.tag != tag_IDAT || !idat_count) {
             if (idat_count > 1)
-                fprintf(stderr, "Chunk: %llu more IDAT chunks\n", (long long unsigned)idat_count-1);
+                fprintf(stderr, "Chunk: %zu more IDAT chunks\n", idat_count-1);
             wbe32(tag, curr_chain->chunk.tag);
-            fprintf(stderr, "Chunk: %s, Size: %u, Offset: %llu, CRC32: %08x\n",
-                tag, curr_chain->chunk.chunk_size, (long long unsigned)curr_chain->chunk.offset,
+            fprintf(stderr, "Chunk: %s, Size: %u, Offset: %zu, CRC32: %08x\n",
+                tag, curr_chain->chunk.chunk_size, curr_chain->chunk.offset,
                 curr_chain->chunk.crc32);
             idat_count = curr_chain->chunk.tag == tag_IDAT ? idat_count + 1 : 0;
         } else {
@@ -1133,7 +1163,7 @@ static int process_png(const char *input, const char *output, const UmbPngOption
                 continue;
             }
             if (options->verbose)
-                fprintf(stderr, "ICC Profile Length: %llu\n", (long long unsigned)profile.size);
+                fprintf(stderr, "ICC Profile Length: %zu\n", profile.size);
             ret = scan_icc(&profile, &scan, &error);
             if (ret < 0) {
                 fprintf(stderr, "%s: Warning: %s\n", argv0, error);
@@ -1311,10 +1341,20 @@ static int process_png(const char *input, const char *output, const UmbPngOption
         const char *error = argv0;
         int skip = 0;
         uint8_t tag[5] = { 0 };
-        for (int i = 0; i < array_size(strip_chunks); i++) {
-            if (strip_chunks[i] == curr_chain->chunk.tag) {
-                skip = 1;
-                break;
+        if (options->strippiness >= STR_MED) {
+            for (int i = 0; i < array_size(strip_chunks_med); i++) {
+                if (strip_chunks_med[i] == curr_chain->chunk.tag) {
+                    skip = 1;
+                    break;
+                }
+            }
+        }
+        if (!skip && options->strippiness >= STR_HIGH) {
+            for (int i = 0; i < array_size(strip_chunks_high); i++) {
+                if (strip_chunks_high[i] == curr_chain->chunk.tag) {
+                    skip = 1;
+                    break;
+                }
             }
         }
         if (curr_chain->chunk.tag == tag_hIST && !data.have_plte)
@@ -1332,6 +1372,17 @@ static int process_png(const char *input, const char *output, const UmbPngOption
             skip = 1;
             for (int i = 0; i < color_channels[data.color]; i++) {
                 if (data.sbit[i] != data.depth) {
+                    skip = 0;
+                    break;
+                }
+            }
+        }
+        if (options->strippiness == STR_NONE)
+            skip = 0;
+        else if (!skip && options->strippiness == STR_ALL) {
+            skip = 1;
+            for (int i = 0; i < array_size(unstrip_chunks_full); i++) {
+                if (curr_chain->chunk.tag == unstrip_chunks_full[i]) {
                     skip = 0;
                     break;
                 }
@@ -1419,6 +1470,13 @@ static int usage(int ret, const char *argv0) {
     fprintf(stderr, "        Tag the output file with a cICP chunk with the provided primaries and transfer.\n");
     fprintf(stderr, "    --srgb\n");
     fprintf(stderr, "        Equivalent to --cicp-prim=bt709 --cicp-trc=srgb\n");
+    fprintf(stderr, "    --strip=<number>\n");
+    fprintf(stderr, "        Which chunks to strip when fixing.\n");
+    fprintf(stderr, "        0 = Strip nothing\n");
+    fprintf(stderr, "        1 = Strip unnecessary color chunks\n");
+    fprintf(stderr, "        2 = Strip (1), plus bKGD, tIME, sPLT, pHYS (default)\n");
+    fprintf(stderr, "        3 = Strip (2), plus eXIF, tEXt, zTXt, iTXt\n");
+    fprintf(stderr, "        4 = Strip all non-critical, non-animation chunks\n");
     return ret;
 }
 
@@ -1432,6 +1490,7 @@ int main(int argc, const char *argv[]) {
     const char **input = NULL;
     options.forced_prim = -1;
     options.forced_trc = -1;
+    options.strippiness = STR_MED;
     options.argv0 = argv[0];
 
     if (argc < 2)
@@ -1470,6 +1529,10 @@ int main(int argc, const char *argv[]) {
             awaiting = 1;
         } else if (!strcmp("--help", argv[i])) {
             return usage(0, argv[0]);
+        } else if (!strncmp("--strip=", argv[i], 8)) {
+            options.strippiness = lookup_array(strip_names, array_size(strip_names), argv[i] + 8);
+            if (options.strippiness < 0)
+                fprintf(stderr, "%s: Illegal strip parameter: %s\n", argv[0], argv[i] + 8);
         } else {
             fprintf(stderr, "%s: Unknown Option: %s\n", argv[0], argv[i]);
             return usage(1, argv[0]);
